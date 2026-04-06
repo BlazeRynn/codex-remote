@@ -1,0 +1,5 @@
+name: codex_proxy
+description: Local stdio tee proxy that mirrors a VS Code Codex session to websocket clients.
+publish_to: none
+environment:
+  sdk: ^3.9.0

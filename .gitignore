@@ -1,0 +1,66 @@
+# OS / editor
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+*.tmp
+.idea/
+.vscode/
+*.iml
+*.ipr
+*.iws
+
+# Dart / Flutter
+**/.dart_tool/
+**/.flutter-plugins
+**/.flutter-plugins-dependencies
+**/.pub/
+**/.pub-cache/
+**/build/
+**/coverage/
+**/doc/api/
+app/.flutter-web-run*.log
+app/.flutter-web-run*.err.log
+
+# Android / Gradle
+**/android/.gradle/
+**/android/captures/
+**/android/local.properties
+**/android/.cxx/
+**/android/**/GeneratedPluginRegistrant.java
+**/*.keystore
+**/*.jks
+**/key.properties
+
+# iOS / macOS
+**/DerivedData/
+**/Pods/
+**/macos/Pods/
+**/.symlinks/
+**/xcuserdata/
+**/macos/**/xcuserdata/
+**/Flutter/.last_build_id
+**/Flutter/App.framework
+**/Flutter/Flutter.framework
+**/Flutter/Flutter.podspec
+**/Flutter/Generated.xcconfig
+**/Flutter/ephemeral/
+**/Flutter/app.flx
+**/Flutter/app.zip
+**/Flutter/flutter_assets/
+**/Flutter/flutter_export_environment.sh
+**/Runner/GeneratedPluginRegistrant.*
+
+# Windows
+**/flutter/ephemeral/
+**/*.suo
+**/*.user
+**/*.userosscache
+**/*.sln.docstates
+**/x64/
+**/x86/
+**/linux/**/CMakeFiles/
+**/linux/**/cmake_install.cmake
+**/linux/**/CMakeCache.txt
+**/*.[Cc]ache
+!**/*.[Cc]ache/
