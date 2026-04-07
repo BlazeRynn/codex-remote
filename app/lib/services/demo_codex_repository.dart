@@ -3,6 +3,7 @@ import 'dart:async';
 import '../models/bridge_config.dart';
 import '../models/bridge_health.dart';
 import '../models/codex_composer_mode.dart';
+import '../models/codex_input_part.dart';
 import '../models/codex_model_option.dart';
 import '../models/codex_pending_request.dart';
 import '../models/codex_thread_bundle.dart';
@@ -55,14 +56,14 @@ class DemoCodexRepository implements CodexRepository {
 
   @override
   Future<CodexThreadBundle> createThread({
-    required String message,
+    required List<CodexInputPart> input,
     required CodexComposerMode mode,
     String? model,
     String? cwd,
   }) async {
     await Future<void>.delayed(const Duration(milliseconds: 180));
     return _store.createThread(
-      message: message,
+      input: input,
       mode: mode,
       model: model,
       cwd: cwd,
@@ -72,7 +73,7 @@ class DemoCodexRepository implements CodexRepository {
   @override
   Future<CodexThreadRuntime> sendMessage({
     required String threadId,
-    required String message,
+    required List<CodexInputPart> input,
     String? expectedTurnId,
     String? model,
     CodexComposerMode? mode,
@@ -81,7 +82,7 @@ class DemoCodexRepository implements CodexRepository {
     await Future<void>.delayed(const Duration(milliseconds: 150));
     return _store.sendMessage(
       threadId: threadId,
-      message: message,
+      input: input,
       expectedTurnId: expectedTurnId,
       model: model,
       mode: mode,
@@ -204,10 +205,13 @@ class _DemoStore {
   List<CodexModelOption> get models => _models;
 
   List<CodexThreadSummary> listThreads() {
-    final threads = _threads.values.map((state) => state.bundle.thread).toList();
+    final threads = _threads.values
+        .map((state) => state.bundle.thread)
+        .toList();
     threads.sort((left, right) {
       final leftTime = left.createdAt ?? DateTime.fromMillisecondsSinceEpoch(0);
-      final rightTime = right.createdAt ?? DateTime.fromMillisecondsSinceEpoch(0);
+      final rightTime =
+          right.createdAt ?? DateTime.fromMillisecondsSinceEpoch(0);
       return rightTime.compareTo(leftTime);
     });
     return threads;
@@ -227,12 +231,14 @@ class _DemoStore {
       return _eventsController.stream;
     }
     return _eventsController.stream.where(
-      (event) => _readThreadId(event.raw) == null || _readThreadId(event.raw) == threadId,
+      (event) =>
+          _readThreadId(event.raw) == null ||
+          _readThreadId(event.raw) == threadId,
     );
   }
 
   CodexThreadBundle createThread({
-    required String message,
+    required List<CodexInputPart> input,
     required CodexComposerMode mode,
     String? model,
     String? cwd,
@@ -241,21 +247,24 @@ class _DemoStore {
     _threadCounter += 1;
     final now = DateTime.now().toUtc();
     final turnId = _nextTurnId();
+    final preview = renderCodexInputPreview(input);
+    final rawContent = codexInputPartsToJson(input);
 
     final userItem = _newItem(
       type: 'user.message',
       title: 'Prompt',
-      body: message,
+      body: preview,
       actor: 'user',
       status: 'done',
       createdAt: now,
+      raw: {'content': rawContent},
     );
 
     final summary = CodexThreadSummary(
       id: threadId,
-      title: _titleFromMessage(message),
+      title: _titleFromMessage(preview),
       status: 'active',
-      preview: message,
+      preview: preview,
       createdAt: now,
       updatedAt: now,
       itemCount: 1,
@@ -280,13 +289,13 @@ class _DemoStore {
       message: 'Turn started',
     );
 
-    _scheduleContinuation(threadId, originalMessage: message);
+    _scheduleContinuation(threadId, originalMessage: preview);
     return _threads[threadId]!.bundle;
   }
 
   CodexThreadRuntime sendMessage({
     required String threadId,
-    required String message,
+    required List<CodexInputPart> input,
     String? expectedTurnId,
     String? model,
     CodexComposerMode? mode,
@@ -295,13 +304,16 @@ class _DemoStore {
     final state = _requireThread(threadId);
     final now = DateTime.now().toUtc();
     final turnId = expectedTurnId ?? _nextTurnId();
+    final preview = renderCodexInputPreview(input);
+    final rawContent = codexInputPartsToJson(input);
     final item = _newItem(
       type: 'user.message',
       title: expectedTurnId == null ? 'Follow-up prompt' : 'Steer active turn',
-      body: message,
+      body: preview,
       actor: 'user',
       status: 'done',
       createdAt: now,
+      raw: {'content': rawContent},
     );
 
     _replaceState(
@@ -311,7 +323,7 @@ class _DemoStore {
           state.bundle,
           item,
           status: 'active',
-          preview: message,
+          preview: preview,
           updatedAt: now,
         ),
         runtime: CodexThreadRuntime(
@@ -325,19 +337,20 @@ class _DemoStore {
       ),
     );
 
-    _publishEvent(threadId: threadId, type: 'turn.started', message: 'Turn started');
+    _publishEvent(
+      threadId: threadId,
+      type: 'turn.started',
+      message: 'Turn started',
+    );
     _scheduleContinuation(
       threadId,
-      originalMessage: message,
+      originalMessage: preview,
       steering: expectedTurnId != null,
     );
     return _threads[threadId]!.runtime;
   }
 
-  CodexThreadRuntime interruptTurn({
-    required String threadId,
-    String? turnId,
-  }) {
+  CodexThreadRuntime interruptTurn({required String threadId, String? turnId}) {
     final state = _requireThread(threadId);
     final activeTurnId = turnId ?? state.runtime.activeTurnId;
     if (activeTurnId == null) {
@@ -412,7 +425,8 @@ class _DemoStore {
       createdAt: now,
     );
 
-    final keepActive = action == 'approve' ||
+    final keepActive =
+        action == 'approve' ||
         action == 'approve_for_session' ||
         action == 'grant_turn' ||
         action == 'grant_session' ||
@@ -580,8 +594,8 @@ class _DemoStore {
       type: request.kind == 'user_input'
           ? 'user.input.request'
           : request.kind == 'mcp_elicitation'
-              ? 'mcp.elicitation.request'
-              : 'approval.request',
+          ? 'mcp.elicitation.request'
+          : 'approval.request',
       message: request.message,
     );
   }
@@ -602,7 +616,10 @@ class _DemoStore {
     for (final state in _threads.values) {
       for (final request in state.runtime.pendingRequests) {
         if (request.id == requestId) {
-          return _PendingEntry(threadId: state.bundle.thread.id, request: request);
+          return _PendingEntry(
+            threadId: state.bundle.thread.id,
+            request: request,
+          );
         }
       }
     }
@@ -636,7 +653,9 @@ class _DemoStore {
     required String type,
     required String message,
   }) {
-    _eventsController.add(_event(threadId: threadId, type: type, message: message));
+    _eventsController.add(
+      _event(threadId: threadId, type: type, message: message),
+    );
   }
 
   String _nextTurnId() => 'turn_${_turnCounter++}';
@@ -648,6 +667,7 @@ class _DemoStore {
     required String actor,
     required String status,
     required DateTime createdAt,
+    Map<String, dynamic> raw = const <String, dynamic>{},
   }) {
     return CodexThreadItem(
       id: 'item_${_itemCounter++}',
@@ -657,6 +677,7 @@ class _DemoStore {
       status: status,
       actor: actor,
       createdAt: createdAt,
+      raw: raw,
     );
   }
 
@@ -684,7 +705,10 @@ class _DemoStore {
     );
   }
 
-  String _previewFromItems(List<CodexThreadItem> items, {required String fallback}) {
+  String _previewFromItems(
+    List<CodexThreadItem> items, {
+    required String fallback,
+  }) {
     for (final item in items.reversed) {
       if (item.actor != 'user') {
         continue;
@@ -808,7 +832,8 @@ class _DemoStore {
           id: 'demo-thread-mobile',
           title: 'Remote coding from Windows',
           status: 'idle',
-          preview: 'Need to create threads, send prompts, and handle approvals.',
+          preview:
+              'Need to create threads, send prompts, and handle approvals.',
           createdAt: now.subtract(const Duration(minutes: 28)),
           updatedAt: now.subtract(const Duration(minutes: 5)),
           itemCount: 5,
@@ -854,7 +879,8 @@ class _DemoStore {
             id: 'item_5',
             type: 'agent.message',
             title: 'Ready for live prompts',
-            body: 'The composer can now drive turns instead of only reading them.',
+            body:
+                'The composer can now drive turns instead of only reading them.',
             status: 'done',
             actor: 'assistant',
             createdAt: now.subtract(const Duration(minutes: 5)),
@@ -937,7 +963,8 @@ class _DemoStore {
             id: 'item_7',
             type: 'agent.message',
             title: 'Started rollout',
-            body: 'Preparing direct write-side app-server calls for the remote client.',
+            body:
+                'Preparing direct write-side app-server calls for the remote client.',
             status: 'done',
             actor: 'assistant',
             createdAt: now.subtract(const Duration(minutes: 22)),

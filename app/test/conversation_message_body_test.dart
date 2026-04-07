@@ -73,6 +73,40 @@ void main() {
     expect(find.text('Preview'), findsOneWidget);
   });
 
+  testWidgets('renders local file mentions as attachment chips', (
+    tester,
+  ) async {
+    final item = CodexThreadItem(
+      id: 'user-file-1',
+      type: 'user.message',
+      title: 'User message',
+      body: '[file] spec.txt',
+      status: 'completed',
+      actor: 'user',
+      raw: {
+        'content': [
+          {'type': 'text', 'text': 'Check this file'},
+          {
+            'type': 'mention',
+            'name': 'spec.txt',
+            'path': r'E:\workspace\codex-control\spec.txt',
+          },
+        ],
+      },
+    );
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(body: ConversationMessageBody(item: item)),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.text('Check this file'), findsOneWidget);
+    expect(find.text('spec.txt'), findsWidgets);
+    expect(find.text(r'E:\workspace\codex-control\spec.txt'), findsOneWidget);
+  });
+
   testWidgets('renders assistant gif items as previewable images', (
     tester,
   ) async {
@@ -256,7 +290,7 @@ void main() {
   });
 
   testWidgets(
-    'hides the reasoning status when a later assistant reply exists',
+    'keeps the reasoning status visible while later assistant replies are still streaming',
     (tester) async {
       final item = CodexThreadItem(
         id: 'assistant-group-reasoning',
@@ -295,10 +329,180 @@ void main() {
       );
       await tester.pump();
 
-      expect(find.text('Thinking'), findsNothing);
+      expect(find.text('Thinking'), findsOneWidget);
       expect(find.text('Here is the next reply.'), findsOneWidget);
     },
   );
+
+  testWidgets('hides the reasoning status once a later final answer exists', (
+    tester,
+  ) async {
+    final item = CodexThreadItem(
+      id: 'assistant-group-reasoning-final',
+      type: 'assistant.group',
+      title: 'Codex',
+      body: '',
+      status: 'in_progress',
+      actor: 'assistant',
+      raw: {
+        'bubbleItems': [
+          CodexThreadItem(
+            id: 'reasoning-active',
+            type: 'reasoning',
+            title: 'Reasoning',
+            body: '',
+            status: 'in_progress',
+            actor: 'assistant',
+          ),
+          CodexThreadItem(
+            id: 'assistant-final',
+            type: 'agent.message',
+            title: 'Assistant',
+            body: 'Final answer is ready.',
+            status: 'completed',
+            actor: 'assistant',
+            raw: const {'phase': 'final_answer'},
+          ),
+        ],
+      },
+    );
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(body: ConversationMessageBody(item: item)),
+      ),
+    );
+    await tester.pump();
+
+    expect(find.text('Thinking'), findsNothing);
+    expect(find.text('Final answer is ready.'), findsOneWidget);
+  });
+
+  testWidgets(
+    'keeps assistant group height stable when reasoning status becomes hidden',
+    (tester) async {
+      final key = GlobalKey();
+
+      Widget buildBody(CodexThreadItem item) {
+        return MaterialApp(
+          home: Scaffold(
+            body: SizedBox(
+              width: 320,
+              child: Container(
+                key: key,
+                child: ConversationMessageBody(item: item),
+              ),
+            ),
+          ),
+        );
+      }
+
+      final streamingGroup = CodexThreadItem(
+        id: 'assistant-group-reasoning-streaming',
+        type: 'assistant.group',
+        title: 'Codex',
+        body: '',
+        status: 'in_progress',
+        actor: 'assistant',
+        raw: {
+          'bubbleItems': [
+            const CodexThreadItem(
+              id: 'reasoning-active',
+              type: 'reasoning',
+              title: 'Reasoning',
+              body: '',
+              status: 'in_progress',
+              actor: 'assistant',
+            ),
+            const CodexThreadItem(
+              id: 'assistant-reply',
+              type: 'agent.message',
+              title: 'Assistant',
+              body: 'Stable reply body.',
+              status: 'streaming',
+              actor: 'assistant',
+              raw: {'phase': 'streaming'},
+            ),
+          ],
+        },
+      );
+
+      final finalGroup = CodexThreadItem(
+        id: 'assistant-group-reasoning-final-stable',
+        type: 'assistant.group',
+        title: 'Codex',
+        body: '',
+        status: 'completed',
+        actor: 'assistant',
+        raw: {
+          'bubbleItems': [
+            const CodexThreadItem(
+              id: 'reasoning-active',
+              type: 'reasoning',
+              title: 'Reasoning',
+              body: '',
+              status: 'completed',
+              actor: 'assistant',
+            ),
+            const CodexThreadItem(
+              id: 'assistant-final',
+              type: 'agent.message',
+              title: 'Assistant',
+              body: 'Stable reply body.',
+              status: 'completed',
+              actor: 'assistant',
+              raw: {'phase': 'final_answer'},
+            ),
+          ],
+        },
+      );
+
+      await tester.pumpWidget(buildBody(streamingGroup));
+      await tester.pump();
+      final beforeHeight = tester.getSize(find.byKey(key)).height;
+
+      await tester.pumpWidget(buildBody(finalGroup));
+      await tester.pump();
+      final afterHeight = tester.getSize(find.byKey(key)).height;
+
+      expect(find.text('Thinking'), findsNothing);
+      expect(afterHeight, beforeHeight);
+    },
+  );
+
+  testWidgets('renders web search items as structured cards', (tester) async {
+    final item = CodexThreadItem(
+      id: 'search-1',
+      type: 'web.search',
+      title: 'latest flutter release',
+      body: 'latest flutter release',
+      status: 'completed',
+      actor: 'assistant',
+      raw: const {
+        'query': 'latest flutter release',
+        'action': {
+          'type': 'openPage',
+          'query': 'latest flutter release',
+          'url': 'https://docs.flutter.dev/release/whats-new',
+        },
+      },
+    );
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(body: ConversationMessageBody(item: item)),
+      ),
+    );
+    await tester.pump();
+
+    expect(find.text('Opened page'), findsOneWidget);
+    expect(find.text('Open'), findsOneWidget);
+    expect(
+      find.text('https://docs.flutter.dev/release/whats-new'),
+      findsOneWidget,
+    );
+    expect(find.text('latest flutter release'), findsOneWidget);
+  });
 
   testWidgets('falls back safely for incomplete streaming markdown', (
     tester,

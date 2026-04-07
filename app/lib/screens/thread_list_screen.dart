@@ -7,6 +7,7 @@ import '../app/workspace_theme.dart';
 import '../models/bridge_config.dart';
 import '../models/bridge_health.dart';
 import '../models/codex_composer_mode.dart';
+import '../models/codex_input_part.dart';
 import '../models/codex_model_option.dart';
 import '../models/codex_thread_summary.dart';
 import '../services/app_preferences_controller.dart';
@@ -484,7 +485,7 @@ class _ThreadListScreenState extends State<ThreadListScreen> {
       }
 
       final bundle = await repository.createThread(
-        message: draft.message,
+        input: [CodexInputPart.text(draft.message)],
         mode: draft.mode,
         model: draft.modelId,
         cwd: draft.cwd,
@@ -987,7 +988,7 @@ class _DesktopDetailStack extends StatelessWidget {
             key: ValueKey('${config.baseUrl}:${thread.id}'),
             config: config,
             thread: thread,
-            selectedThreadId: thread.id,
+            selectedThreadId: selectedThreadId,
             activeThreadId: activeThreadId,
             workspaceStyle: workspaceStyle,
           ),
@@ -2222,11 +2223,11 @@ String _threadCardSubtitle(CodexThreadSummary thread) {
 
 String _modeLabel(BuildContext context, CodexComposerMode mode) {
   return switch (mode) {
-    CodexComposerMode.chat => context.strings.text('Chat', '聊天'),
-    CodexComposerMode.agent => context.strings.text('Agent', '代理'),
+    CodexComposerMode.chat => context.strings.text('Read only', '只读'),
+    CodexComposerMode.agent => context.strings.text('Edit project', '项目内修改'),
     CodexComposerMode.agentFullAccess => context.strings.text(
-      'Agent (Full Access)',
-      '代理（完全访问）',
+      'Full access',
+      '完全访问',
     ),
   };
 }

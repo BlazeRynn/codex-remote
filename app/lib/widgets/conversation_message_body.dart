@@ -14,6 +14,7 @@ import '../models/codex_thread_item.dart';
 import '../services/command_execution_presentation.dart';
 import '../services/file_change_entries.dart';
 import '../services/thread_message_content.dart';
+import '../utils/json_utils.dart';
 import 'file_change_cards.dart';
 
 class ConversationMessageBody extends StatelessWidget {
@@ -50,6 +51,10 @@ class ConversationMessageBody extends StatelessWidget {
 
     if (item.type == 'reasoning') {
       return _ReasoningMessageBody(item: item, workspaceStyle: workspaceStyle);
+    }
+
+    if (item.type == 'web.search') {
+      return _WebSearchMessageBody(item: item, workspaceStyle: workspaceStyle);
     }
 
     final mediaReference = _imageReferenceForItem(item);
@@ -120,6 +125,7 @@ class _AssistantGroupBody extends StatelessWidget {
             showReasoningStatus:
                 items[index].type == 'reasoning' &&
                 !_hasLaterAssistantReply(items, index),
+            reserveReasoningStatusSpace: items[index].type == 'reasoning',
           ),
         ],
       ],
@@ -132,11 +138,13 @@ class _AssistantGroupItemBody extends StatelessWidget {
     required this.item,
     required this.workspaceStyle,
     this.showReasoningStatus = true,
+    this.reserveReasoningStatusSpace = false,
   });
 
   final CodexThreadItem item;
   final bool workspaceStyle;
   final bool showReasoningStatus;
+  final bool reserveReasoningStatusSpace;
 
   @override
   Widget build(BuildContext context) {
@@ -163,7 +171,12 @@ class _AssistantGroupItemBody extends StatelessWidget {
         item: item,
         workspaceStyle: workspaceStyle,
         showStatus: showReasoningStatus,
+        reserveStatusSpace: reserveReasoningStatusSpace,
       );
+    }
+
+    if (item.type == 'web.search') {
+      return _WebSearchMessageBody(item: item, workspaceStyle: workspaceStyle);
     }
 
     return ConversationMessageBody(item: item, workspaceStyle: workspaceStyle);
@@ -175,11 +188,13 @@ class _ReasoningMessageBody extends StatefulWidget {
     required this.item,
     required this.workspaceStyle,
     this.showStatus = true,
+    this.reserveStatusSpace = false,
   });
 
   final CodexThreadItem item;
   final bool workspaceStyle;
   final bool showStatus;
+  final bool reserveStatusSpace;
 
   @override
   State<_ReasoningMessageBody> createState() => _ReasoningMessageBodyState();
@@ -191,15 +206,18 @@ class _ReasoningMessageBodyState extends State<_ReasoningMessageBody> {
     final body = widget.item.body.trimRight();
     final active = _isReasoningInProgress(widget.item);
     final showStatus = widget.showStatus && active;
-    if (body.isEmpty && !showStatus) {
+    final reserveStatusSpace = widget.reserveStatusSpace;
+    if (body.isEmpty && !showStatus && !reserveStatusSpace) {
       return const SizedBox.shrink();
     }
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        if (showStatus)
-          _ReasoningStatusLine(workspaceStyle: widget.workspaceStyle),
+        if (showStatus || reserveStatusSpace)
+          showStatus
+              ? _ReasoningStatusLine(workspaceStyle: widget.workspaceStyle)
+              : SizedBox(height: _reasoningStatusLineHeight(context)),
         if (showStatus && body.isNotEmpty)
           SizedBox(height: widget.workspaceStyle ? 6 : 8),
         if (body.isNotEmpty)
@@ -281,6 +299,19 @@ class _UserMessagePartView extends StatelessWidget {
           caption: part.path,
           workspaceStyle: workspaceStyle,
         );
+      case UserMessagePartType.mention:
+        if (_isLocalFileMention(part)) {
+          return _MessageAttachmentView(
+            icon: Icons.attach_file_rounded,
+            label: part.name ?? _basename(part.path),
+            caption: part.path,
+            workspaceStyle: workspaceStyle,
+          );
+        }
+        return _MarkdownTextBody(
+          data: part.text,
+          workspaceStyle: workspaceStyle,
+        );
       default:
         return _MarkdownTextBody(
           data: part.text,
@@ -325,6 +356,74 @@ class _MarkdownTextBody extends StatelessWidget {
       data: trimmed,
       workspaceStyle: workspaceStyle,
       fallbackStyle: fallbackStyle,
+    );
+  }
+}
+
+class _MessageAttachmentView extends StatelessWidget {
+  const _MessageAttachmentView({
+    required this.icon,
+    required this.label,
+    required this.caption,
+    required this.workspaceStyle,
+  });
+
+  final IconData icon;
+  final String label;
+  final String? caption;
+  final bool workspaceStyle;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return DecoratedBox(
+      decoration: BoxDecoration(
+        color: mutedPanelBackgroundColor(theme),
+        borderRadius: BorderRadius.circular(workspaceStyle ? 12 : 14),
+        border: Border.all(color: borderColor(theme)),
+      ),
+      child: Padding(
+        padding: EdgeInsets.fromLTRB(
+          workspaceStyle ? 10 : 12,
+          workspaceStyle ? 8 : 10,
+          workspaceStyle ? 10 : 12,
+          workspaceStyle ? 8 : 10,
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(icon, size: workspaceStyle ? 16 : 18),
+            SizedBox(width: workspaceStyle ? 8 : 10),
+            Flexible(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    label.trim().isEmpty
+                        ? _localizedText(context, 'Attachment', '附件')
+                        : label.trim(),
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: theme.textTheme.bodyMedium?.copyWith(
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                  if ((caption?.trim() ?? '').isNotEmpty)
+                    Text(
+                      caption!.trim(),
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                      style: theme.textTheme.bodySmall?.copyWith(
+                        color: secondaryTextColor(theme),
+                      ),
+                    ),
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
     );
   }
 }
@@ -856,6 +955,100 @@ class _EmbeddedFileChangeGroup extends StatelessWidget {
   }
 }
 
+class _WebSearchMessageBody extends StatelessWidget {
+  const _WebSearchMessageBody({
+    required this.item,
+    required this.workspaceStyle,
+  });
+
+  final CodexThreadItem item;
+  final bool workspaceStyle;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final summary = _webSearchSummary(context, item);
+    final accentColor = theme.colorScheme.primary;
+    final primaryText = summary.primaryText;
+    final secondaryText = summary.secondaryText;
+
+    return DecoratedBox(
+      decoration: BoxDecoration(
+        color: mutedPanelBackgroundColor(theme),
+        borderRadius: BorderRadius.circular(workspaceStyle ? 14 : 16),
+        border: Border.all(color: borderColor(theme)),
+      ),
+      child: Padding(
+        padding: EdgeInsets.fromLTRB(
+          workspaceStyle ? 12 : 14,
+          workspaceStyle ? 10 : 12,
+          workspaceStyle ? 12 : 14,
+          workspaceStyle ? 10 : 12,
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              crossAxisAlignment: CrossAxisAlignment.center,
+              children: [
+                Container(
+                  width: workspaceStyle ? 22 : 24,
+                  height: workspaceStyle ? 22 : 24,
+                  decoration: BoxDecoration(
+                    color: accentColor.withValues(alpha: 0.10),
+                    borderRadius: BorderRadius.circular(8),
+                  ),
+                  alignment: Alignment.center,
+                  child: Icon(
+                    summary.icon,
+                    size: workspaceStyle ? 13 : 14,
+                    color: accentColor,
+                  ),
+                ),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text(
+                    summary.label,
+                    style: theme.textTheme.labelLarge?.copyWith(
+                      fontWeight: FontWeight.w700,
+                    ),
+                  ),
+                ),
+                _InlineMetaBadge(
+                  value: summary.kindLabel,
+                  workspaceStyle: workspaceStyle,
+                ),
+              ],
+            ),
+            if (primaryText.isNotEmpty) ...[
+              SizedBox(height: workspaceStyle ? 8 : 10),
+              SelectableText(
+                primaryText,
+                style: theme.textTheme.bodyMedium?.copyWith(
+                  color: theme.colorScheme.onSurface,
+                  fontWeight: FontWeight.w500,
+                  height: 1.4,
+                ),
+              ),
+            ],
+            if (secondaryText != null && secondaryText.trim().isNotEmpty) ...[
+              SizedBox(height: workspaceStyle ? 6 : 8),
+              SelectableText(
+                secondaryText,
+                style: appCodeTextStyle(theme.textTheme.bodySmall).copyWith(
+                  color: secondaryTextColor(theme),
+                  fontSize: workspaceStyle ? 11.5 : 12,
+                  height: 1.35,
+                ),
+              ),
+            ],
+          ],
+        ),
+      ),
+    );
+  }
+}
+
 class _InlineMetaBadge extends StatelessWidget {
   const _InlineMetaBadge({required this.value, required this.workspaceStyle});
 
@@ -1197,6 +1390,26 @@ String? _captionForImageReference(String? reference) {
   return value;
 }
 
+bool _isLocalFileMention(UserMessagePart part) {
+  final path = part.path?.trim() ?? '';
+  return path.isNotEmpty && !path.contains('://');
+}
+
+String _basename(String? value) {
+  final normalized = value?.trim() ?? '';
+  if (normalized.isEmpty) {
+    return '';
+  }
+  final pieces = normalized
+      .split(RegExp(r'[\\/]'))
+      .where((segment) => segment.trim().isNotEmpty)
+      .toList(growable: false);
+  if (pieces.isEmpty) {
+    return normalized;
+  }
+  return pieces.last;
+}
+
 String? _imageReferenceForItem(CodexThreadItem item) {
   if (item.type != 'image.view' && item.type != 'image.generation') {
     return null;
@@ -1228,7 +1441,8 @@ bool _shouldShowAssistantGroupLabel(CodexThreadItem item) {
   return item.type != 'agent.message' &&
       item.type != 'reasoning' &&
       item.type != 'command.execution' &&
-      item.type != 'file.change';
+      item.type != 'file.change' &&
+      item.type != 'web.search';
 }
 
 String _localizedAssistantGroupLabel(
@@ -1301,12 +1515,13 @@ bool _isReasoningInProgress(CodexThreadItem item) {
 
 bool _hasLaterAssistantReply(List<CodexThreadItem> items, int index) {
   for (var cursor = index + 1; cursor < items.length; cursor += 1) {
-    switch (items[cursor].type) {
+    final item = items[cursor];
+    switch (item.type) {
       case 'agent.message':
+        if (_itemPhase(item) == 'final_answer' && item.body.trim().isNotEmpty) {
+          return true;
+        }
       case 'assistant.group':
-      case 'plan':
-      case 'command.execution':
-      case 'file.change':
       case 'image.view':
       case 'image.generation':
         return true;
@@ -1315,6 +1530,77 @@ bool _hasLaterAssistantReply(List<CodexThreadItem> items, int index) {
     }
   }
   return false;
+}
+
+_WebSearchSummary _webSearchSummary(
+  BuildContext context,
+  CodexThreadItem item,
+) {
+  final action = asJsonMap(item.raw['action']);
+  final actionType = readString(action, const ['type']).trim();
+  final query = readString(
+    action,
+    const ['query'],
+    fallback: readString(item.raw, const ['query'], fallback: item.title),
+  ).trim();
+  final url = readString(action, const [
+    'url',
+  ], fallback: readString(item.raw, const ['url'])).trim();
+  final fallbackBody = item.body.trim();
+
+  switch (actionType) {
+    case 'openPage':
+      return _WebSearchSummary(
+        label: _localizedText(context, 'Opened page', '已打开网页'),
+        kindLabel: _localizedText(context, 'Open', '打开'),
+        primaryText: url.isNotEmpty
+            ? url
+            : (query.isNotEmpty ? query : fallbackBody),
+        secondaryText: query.isNotEmpty && query != url ? query : null,
+        icon: Icons.open_in_browser_rounded,
+      );
+    case 'search':
+    default:
+      return _WebSearchSummary(
+        label: _localizedText(context, 'Web search', '网页搜索'),
+        kindLabel: _localizedText(context, 'Search', '搜索'),
+        primaryText: query.isNotEmpty ? query : fallbackBody,
+        secondaryText: url.isNotEmpty && url != query ? url : null,
+        icon: Icons.travel_explore_rounded,
+      );
+  }
+}
+
+class _WebSearchSummary {
+  const _WebSearchSummary({
+    required this.label,
+    required this.kindLabel,
+    required this.primaryText,
+    required this.secondaryText,
+    required this.icon,
+  });
+
+  final String label;
+  final String kindLabel;
+  final String primaryText;
+  final String? secondaryText;
+  final IconData icon;
+}
+
+double _reasoningStatusLineHeight(BuildContext context) {
+  final theme = Theme.of(context);
+  final text = _localizedText(context, 'Thinking', '正在思考');
+  final style = theme.textTheme.labelMedium?.copyWith(
+    color: secondaryTextColor(theme),
+    fontWeight: FontWeight.w600,
+  );
+  final painter = TextPainter(
+    text: TextSpan(text: text, style: style),
+    textDirection: Directionality.of(context),
+    textScaler: MediaQuery.textScalerOf(context),
+    maxLines: 1,
+  )..layout();
+  return painter.size.height;
 }
 
 class _VsCodeSyntaxHighlighter {

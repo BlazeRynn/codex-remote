@@ -9,6 +9,7 @@ import '../app/app_typography.dart';
 import '../app/workspace_theme.dart';
 import '../models/bridge_config.dart';
 import '../models/codex_composer_mode.dart';
+import '../models/codex_input_part.dart';
 import '../models/codex_model_option.dart';
 import '../models/codex_pending_request.dart';
 import '../models/codex_thread_bundle.dart';
@@ -16,6 +17,7 @@ import '../models/codex_thread_item.dart';
 import '../models/codex_thread_runtime.dart';
 import '../models/codex_thread_summary.dart';
 import '../services/bridge_realtime_client.dart';
+import '../services/composer_attachment_bridge.dart';
 import '../services/codex_repository.dart';
 import '../services/realtime_event_helpers.dart';
 import '../services/realtime_event_buffer.dart';
@@ -84,7 +86,6 @@ class _ThreadDetailPaneState extends State<ThreadDetailPane>
 
   late final CodexRepository _repository;
   late final TextEditingController _composerController;
-  late final TextEditingController _cwdController;
   late final ScrollController _timelineScrollController;
   late final ThreadRealtimeAccumulator _realtimeAccumulator;
   late CodexThreadBundle _bundle;
@@ -101,6 +102,7 @@ class _ThreadDetailPaneState extends State<ThreadDetailPane>
   LiveConnectionState _liveConnectionState = LiveConnectionState.disconnected;
   String? _liveError;
   List<CodexModelOption> _models = const [];
+  List<CodexInputPart> _composerAttachments = const [];
   CodexComposerMode _selectedMode = CodexComposerMode.agent;
   String? _selectedModelId;
 
@@ -111,7 +113,6 @@ class _ThreadDetailPaneState extends State<ThreadDetailPane>
   bool _bundleRequestInFlight = false;
   bool _runtimeRequestInFlight = false;
   bool _pendingRequestsExpanded = false;
-  bool _composerOptionsExpanded = false;
   bool _followConversation = true;
   bool _realtimeAttachPending = false;
   bool _programmaticScrollInProgress = false;
@@ -130,7 +131,6 @@ class _ThreadDetailPaneState extends State<ThreadDetailPane>
     super.initState();
     _repository = createCodexRepository(widget.config);
     _composerController = TextEditingController();
-    _cwdController = TextEditingController();
     _followConversation =
         _followConversationCache[widget.thread.id] ?? _followConversation;
     _timelineScrollController = ScrollController(
@@ -145,6 +145,14 @@ class _ThreadDetailPaneState extends State<ThreadDetailPane>
       pendingRequests: const [],
     );
     _primeFromCache();
+    if (_isSelectedThread) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted) {
+          return;
+        }
+        _activateFollowConversationAndScroll();
+      });
+    }
     _debugLog('init', fields: {'initialStatus': _bundle.thread.status});
     unawaited(
       _reloadAll(
@@ -159,6 +167,19 @@ class _ThreadDetailPaneState extends State<ThreadDetailPane>
   @override
   void didUpdateWidget(covariant ThreadDetailPane oldWidget) {
     super.didUpdateWidget(oldWidget);
+    final wasSelected = _matchesSelectedThread(
+      selectedThreadId: oldWidget.selectedThreadId,
+      threadId: oldWidget.thread.id,
+    );
+    final isSelected = _isSelectedThread;
+    if (!wasSelected && isSelected) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted) {
+          return;
+        }
+        _activateFollowConversationAndScroll();
+      });
+    }
     if (oldWidget.thread.id != widget.thread.id) {
       return;
     }
@@ -184,13 +205,37 @@ class _ThreadDetailPaneState extends State<ThreadDetailPane>
     _maybeProbeRealtimeAttach();
   }
 
+  bool get _isSelectedThread => _matchesSelectedThread(
+    selectedThreadId: widget.selectedThreadId,
+    threadId: widget.thread.id,
+  );
+
+  bool _matchesSelectedThread({
+    required String? selectedThreadId,
+    required String threadId,
+  }) {
+    final effectiveSelectedThreadId = selectedThreadId ?? threadId;
+    return effectiveSelectedThreadId == threadId;
+  }
+
+  void _activateFollowConversationAndScroll() {
+    _timelineOffsetCache.remove(widget.thread.id);
+    if (_followConversation) {
+      _scrollConversationToBottom(animated: false, force: true);
+      return;
+    }
+    setState(() {
+      _followConversation = true;
+    });
+    _scrollConversationToBottom(animated: false, force: true);
+  }
+
   @override
   void dispose() {
     _refreshDebounce?.cancel();
     _reattachProbeTimer?.cancel();
     _storeTimelineScrollState();
     _composerController.dispose();
-    _cwdController.dispose();
     _timelineScrollController
       ..removeListener(_handleTimelineScroll)
       ..dispose();
@@ -1047,10 +1092,16 @@ class _ThreadDetailPaneState extends State<ThreadDetailPane>
       return false;
     }
 
+    if (type == 'thread.status') {
+      return true;
+    }
+
     return method == 'item/completed' ||
+        method == 'turn/started' ||
         method == 'turn/completed' ||
         method == 'thread/realtime/error' ||
         method == 'thread/realtime/closed' ||
+        type == 'turn.started' ||
         type == 'turn.completed' ||
         type == 'thread.realtime.error' ||
         type == 'thread.realtime.closed';
@@ -1083,9 +1134,89 @@ class _ThreadDetailPaneState extends State<ThreadDetailPane>
         event.type.endsWith('.updated');
   }
 
-  Future<void> _submitComposer() async {
+  List<CodexInputPart> _composerInputParts() {
     final message = _composerController.text.trim();
-    if (message.isEmpty) {
+    return [
+      if (message.isNotEmpty) CodexInputPart.text(message),
+      ..._composerAttachments,
+    ];
+  }
+
+  Future<void> _pickComposerAttachments() async {
+    final attachments = await composerAttachmentBridge.pickAttachments();
+    if (!mounted || attachments.isEmpty) {
+      return;
+    }
+    _appendComposerAttachments(attachments);
+  }
+
+  Future<bool> _pasteComposerContent() async {
+    final attachments = await composerAttachmentBridge
+        .readClipboardAttachments();
+    if (!mounted) {
+      return attachments.isNotEmpty;
+    }
+    if (attachments.isNotEmpty) {
+      _appendComposerAttachments(attachments);
+      return true;
+    }
+
+    final data = await Clipboard.getData(Clipboard.kTextPlain);
+    final text = data?.text;
+    if (!mounted || text == null || text.isEmpty) {
+      return false;
+    }
+    _insertComposerTextAtSelection(text);
+    return true;
+  }
+
+  void _insertComposerTextAtSelection(String text) {
+    final value = _composerController.value;
+    final selection = value.selection;
+    final start = selection.isValid ? selection.start : value.text.length;
+    final end = selection.isValid ? selection.end : value.text.length;
+    final safeStart = start < 0 ? value.text.length : start;
+    final safeEnd = end < 0 ? value.text.length : end;
+    final replaced = value.text.replaceRange(safeStart, safeEnd, text);
+    final caretOffset = safeStart + text.length;
+    _composerController.value = value.copyWith(
+      text: replaced,
+      selection: TextSelection.collapsed(offset: caretOffset),
+      composing: TextRange.empty,
+    );
+  }
+
+  void _appendComposerAttachments(List<CodexInputPart> attachments) {
+    final next = [..._composerAttachments];
+    for (final attachment in attachments) {
+      final duplicate = next.any(
+        (existing) =>
+            existing.type == attachment.type &&
+            existing.path == attachment.path,
+      );
+      if (!duplicate) {
+        next.add(attachment);
+      }
+    }
+    setState(() {
+      _composerAttachments = List.unmodifiable(next);
+    });
+  }
+
+  void _removeComposerAttachment(CodexInputPart attachment) {
+    setState(() {
+      _composerAttachments = _composerAttachments
+          .where(
+            (item) =>
+                item.type != attachment.type || item.path != attachment.path,
+          )
+          .toList(growable: false);
+    });
+  }
+
+  Future<void> _submitComposer() async {
+    final input = _composerInputParts();
+    if (input.isEmpty) {
       return;
     }
 
@@ -1097,19 +1228,19 @@ class _ThreadDetailPaneState extends State<ThreadDetailPane>
     try {
       final runtime = await _repository.sendMessage(
         threadId: widget.thread.id,
-        message: message,
+        input: input,
         expectedTurnId: _runtime.activeTurnId,
         model: _runtime.activeTurnId == null ? _selectedModelId : null,
         mode: _runtime.activeTurnId == null ? _selectedMode : null,
-        cwd: _runtime.activeTurnId == null ? _normalizedCwd() : null,
       );
       if (!mounted) {
         return;
       }
 
-      _composerController.clear();
-      _followConversation = true;
       setState(() {
+        _composerController.clear();
+        _composerAttachments = const [];
+        _followConversation = true;
         _runtime = runtime;
         final nextStatus = runtime.activeTurnId == null ? 'idle' : 'active';
         _bundle = CodexThreadBundle(
@@ -1276,11 +1407,6 @@ class _ThreadDetailPaneState extends State<ThreadDetailPane>
     );
   }
 
-  String? _normalizedCwd() {
-    final value = _cwdController.text.trim();
-    return value.isEmpty ? null : value;
-  }
-
   @override
   Widget build(BuildContext context) {
     super.build(context);
@@ -1400,7 +1526,7 @@ class _ThreadDetailPaneState extends State<ThreadDetailPane>
           ),
           _ComposerDock(
             composerController: _composerController,
-            cwdController: _cwdController,
+            attachments: _composerAttachments,
             selectedMode: _selectedMode,
             onModeChanged: (mode) {
               setState(() {
@@ -1420,13 +1546,10 @@ class _ThreadDetailPaneState extends State<ThreadDetailPane>
             hasActiveTurn: _runtime.activeTurnId != null,
             onSubmit: _submitComposer,
             onInterrupt: _interruptTurn,
+            onPickAttachments: _pickComposerAttachments,
+            onPasteFromClipboard: _pasteComposerContent,
+            onRemoveAttachment: _removeComposerAttachment,
             workspaceStyle: widget.workspaceStyle,
-            optionsExpanded: _composerOptionsExpanded,
-            onToggleOptions: () {
-              setState(() {
-                _composerOptionsExpanded = !_composerOptionsExpanded;
-              });
-            },
           ),
         ],
       ),
@@ -2016,7 +2139,7 @@ class _PendingRequestCard extends StatelessWidget {
 class _ComposerDock extends StatelessWidget {
   const _ComposerDock({
     required this.composerController,
-    required this.cwdController,
+    required this.attachments,
     required this.selectedMode,
     required this.onModeChanged,
     required this.models,
@@ -2028,13 +2151,14 @@ class _ComposerDock extends StatelessWidget {
     required this.hasActiveTurn,
     required this.onSubmit,
     required this.onInterrupt,
-    required this.optionsExpanded,
-    required this.onToggleOptions,
+    required this.onPickAttachments,
+    required this.onPasteFromClipboard,
+    required this.onRemoveAttachment,
     this.workspaceStyle = false,
   });
 
   final TextEditingController composerController;
-  final TextEditingController cwdController;
+  final List<CodexInputPart> attachments;
   final CodexComposerMode selectedMode;
   final ValueChanged<CodexComposerMode> onModeChanged;
   final List<CodexModelOption> models;
@@ -2046,8 +2170,9 @@ class _ComposerDock extends StatelessWidget {
   final bool hasActiveTurn;
   final Future<void> Function() onSubmit;
   final Future<void> Function() onInterrupt;
-  final bool optionsExpanded;
-  final VoidCallback onToggleOptions;
+  final Future<void> Function() onPickAttachments;
+  final Future<bool> Function() onPasteFromClipboard;
+  final ValueChanged<CodexInputPart> onRemoveAttachment;
   final bool workspaceStyle;
 
   @override
@@ -2057,77 +2182,13 @@ class _ComposerDock extends StatelessWidget {
     final compactWorkspace = workspaceStyle;
     final helperText = hasActiveTurn
         ? strings.text(
-            'Steer the active turn or interrupt it.',
-            '可以引导当前轮次，或直接中断。',
+            'Steer the active turn, or leave the box empty to interrupt it.',
+            '可以引导当前轮次；留空并发送会中断当前轮次。',
           )
         : strings.text(
             'Start the next turn with the composer below.',
             '使用下方输入框开始下一轮。',
           );
-    final modelField = DropdownButtonFormField<String>(
-      initialValue: selectedModelId,
-      items: models
-          .map(
-            (model) => DropdownMenuItem(
-              value: model.id,
-              child: Text(model.displayName),
-            ),
-          )
-          .toList(growable: false),
-      onChanged: hasActiveTurn || loadingModels || submitting
-          ? null
-          : onModelChanged,
-      decoration: InputDecoration(
-        isDense: compactWorkspace,
-        labelText: strings.text('Model', '模型'),
-      ),
-    );
-    final modeField = SegmentedButton<CodexComposerMode>(
-      segments: CodexComposerMode.values
-          .map(
-            (mode) => ButtonSegment(
-              value: mode,
-              label: Text(_modeLabel(context, mode)),
-            ),
-          )
-          .toList(growable: false),
-      selected: {selectedMode},
-      onSelectionChanged: hasActiveTurn || submitting
-          ? null
-          : (selection) {
-              if (selection.isNotEmpty) {
-                onModeChanged(selection.first);
-              }
-            },
-    );
-    final cwdField = TextField(
-      controller: cwdController,
-      enabled: !hasActiveTurn && !submitting,
-      decoration: InputDecoration(
-        isDense: compactWorkspace,
-        labelText: strings.text('Working Directory', '工作目录'),
-        hintText: strings.text('Optional project path override', '可选项目路径覆盖'),
-      ),
-    );
-    final submitButton = FilledButton.icon(
-      onPressed: submitting || runtimeLoading
-          ? null
-          : () {
-              unawaited(onSubmit());
-            },
-      icon: submitting
-          ? const SizedBox(
-              width: 16,
-              height: 16,
-              child: CircularProgressIndicator(strokeWidth: 2),
-            )
-          : Icon(hasActiveTurn ? Icons.send : Icons.play_arrow),
-      label: Text(
-        hasActiveTurn
-            ? strings.text('Steer', '引导')
-            : strings.text('Send', '发送'),
-      ),
-    );
     CodexModelOption? selectedModel;
     if (selectedModelId != null) {
       for (final model in models) {
@@ -2137,13 +2198,276 @@ class _ComposerDock extends StatelessWidget {
         }
       }
     }
-    final modelSummary =
-        selectedModel?.displayName ??
-        selectedModelId ??
-        strings.text('Model auto', '模型自动');
-    final cwdSummary = cwdController.text.trim().isEmpty
-        ? null
-        : _workspaceLabel(context, cwdController.text.trim());
+    final modelLabel = loadingModels && models.isEmpty
+        ? strings.text('Loading models', '加载模型')
+        : selectedModel?.displayName ??
+              selectedModelId ??
+              strings.text('Model auto', '模型自动');
+    final reasoningLabel = _reasoningEffortLabel(context, selectedModel);
+    final permissionLabel = _permissionLabel(context, selectedMode);
+    final composerLabel = hasActiveTurn ? null : strings.text('Prompt', '提示词');
+    final composerHint = hasActiveTurn
+        ? strings.text(
+            'Provide steering or clarifying instructions',
+            '提供引导或澄清指令',
+          )
+        : strings.text('Tell Codex what to do next', '告诉 Codex 下一步做什么');
+    final modelControl = _InlineComposerMenu<String>(
+      label: modelLabel,
+      enabled: !loadingModels && !submitting && models.isNotEmpty,
+      tooltip: strings.text('Select model', '选择模型'),
+      items: models
+          .map(
+            (model) => PopupMenuItem<String>(
+              value: model.id,
+              child: SizedBox(
+                width: compactWorkspace ? 220 : 260,
+                child: Text(model.displayName, overflow: TextOverflow.ellipsis),
+              ),
+            ),
+          )
+          .toList(growable: false),
+      onSelected: (value) {
+        onModelChanged(value);
+      },
+    );
+    final reasoningControl = Tooltip(
+      message: strings.text(
+        'Showing the selected model default reasoning effort.',
+        '当前显示所选模型的默认推理强度。',
+      ),
+      child: _InlineComposerValue(label: reasoningLabel),
+    );
+    final permissionControl = _InlineComposerMenu<CodexComposerMode>(
+      label: permissionLabel,
+      enabled: !hasActiveTurn && !submitting,
+      tooltip: hasActiveTurn
+          ? strings.text(
+              'Permission changes apply when the next turn starts.',
+              '权限调整会在下一轮开始时生效。',
+            )
+          : strings.text('Select permissions', '选择权限'),
+      items: CodexComposerMode.values
+          .map(
+            (mode) => PopupMenuItem<CodexComposerMode>(
+              value: mode,
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(_permissionLabel(context, mode)),
+                  Text(
+                    _modeLabel(context, mode),
+                    style: theme.textTheme.bodySmall?.copyWith(
+                      color: secondaryTextColor(theme),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          )
+          .toList(growable: false),
+      onSelected: onModeChanged,
+    );
+    final attachmentButton = Tooltip(
+      message: strings.text('Add image or file', '添加图片或文件'),
+      child: IconButton(
+        onPressed: submitting || runtimeLoading
+            ? null
+            : () {
+                unawaited(onPickAttachments());
+              },
+        visualDensity: VisualDensity.compact,
+        splashRadius: compactWorkspace ? 16 : 18,
+        iconSize: compactWorkspace ? 16 : 18,
+        icon: const Icon(Icons.attach_file_rounded),
+      ),
+    );
+    final submitButton = ValueListenableBuilder<TextEditingValue>(
+      valueListenable: composerController,
+      builder: (context, value, _) {
+        final interruptAction =
+            hasActiveTurn && value.text.trim().isEmpty && attachments.isEmpty;
+        return Tooltip(
+          message: interruptAction
+              ? strings.text('Interrupt current turn', '中断当前轮次')
+              : hasActiveTurn
+              ? strings.text('Send steering message', '发送引导消息')
+              : strings.text('Send prompt', '发送提示词'),
+          child: IconButton.filled(
+            onPressed: submitting || runtimeLoading
+                ? null
+                : () {
+                    unawaited(interruptAction ? onInterrupt() : onSubmit());
+                  },
+            style: IconButton.styleFrom(
+              backgroundColor: interruptAction
+                  ? theme.colorScheme.error
+                  : theme.colorScheme.primary,
+              foregroundColor: interruptAction
+                  ? theme.colorScheme.onError
+                  : theme.colorScheme.onPrimary,
+              disabledBackgroundColor: theme.colorScheme.primary.withValues(
+                alpha: 0.28,
+              ),
+              disabledForegroundColor: theme.colorScheme.onPrimary.withValues(
+                alpha: 0.55,
+              ),
+              minimumSize: Size(
+                compactWorkspace ? 30 : 34,
+                compactWorkspace ? 30 : 34,
+              ),
+            ),
+            icon: submitting
+                ? const SizedBox(
+                    width: 14,
+                    height: 14,
+                    child: CircularProgressIndicator(strokeWidth: 2),
+                  )
+                : Icon(
+                    interruptAction
+                        ? Icons.stop_rounded
+                        : Icons.arrow_upward_rounded,
+                    size: compactWorkspace ? 16 : 18,
+                  ),
+          ),
+        );
+      },
+    );
+    final composerField = DecoratedBox(
+      decoration: BoxDecoration(
+        color:
+            theme.inputDecorationTheme.fillColor ?? panelBackgroundColor(theme),
+        borderRadius: BorderRadius.circular(compactWorkspace ? 18 : 22),
+        border: Border.all(color: borderColor(theme)),
+      ),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          if (composerLabel != null)
+            Padding(
+              padding: EdgeInsets.fromLTRB(
+                compactWorkspace ? 12 : 16,
+                compactWorkspace ? 10 : 14,
+                compactWorkspace ? 12 : 16,
+                0,
+              ),
+              child: Text(
+                composerLabel,
+                style: theme.textTheme.labelSmall?.copyWith(
+                  color: secondaryTextColor(theme),
+                  letterSpacing: 0.2,
+                ),
+              ),
+            ),
+          Actions(
+            actions: {
+              PasteTextIntent: _ComposerPasteTextAction(
+                onPaste: onPasteFromClipboard,
+              ),
+            },
+            child: TextField(
+              controller: composerController,
+              minLines: hasActiveTurn ? (compactWorkspace ? 3 : 6) : 2,
+              maxLines: hasActiveTurn ? (compactWorkspace ? 8 : 12) : 6,
+              enabled: !submitting && !runtimeLoading,
+              decoration: InputDecoration(
+                isDense: compactWorkspace,
+                hintText: composerHint,
+                border: InputBorder.none,
+                enabledBorder: InputBorder.none,
+                focusedBorder: InputBorder.none,
+                disabledBorder: InputBorder.none,
+                filled: false,
+                fillColor: Colors.transparent,
+                focusColor: Colors.transparent,
+                hoverColor: Colors.transparent,
+                contentPadding: EdgeInsets.fromLTRB(
+                  compactWorkspace ? 12 : 16,
+                  compactWorkspace ? 10 : 12,
+                  compactWorkspace ? 12 : 16,
+                  compactWorkspace ? 8 : 12,
+                ),
+              ),
+            ),
+          ),
+          if (attachments.isNotEmpty)
+            Padding(
+              padding: EdgeInsets.fromLTRB(
+                compactWorkspace ? 10 : 14,
+                0,
+                compactWorkspace ? 10 : 14,
+                compactWorkspace ? 8 : 10,
+              ),
+              child: Wrap(
+                spacing: compactWorkspace ? 6 : 8,
+                runSpacing: compactWorkspace ? 6 : 8,
+                children: [
+                  for (final attachment in attachments)
+                    _ComposerAttachmentChip(
+                      attachment: attachment,
+                      compact: compactWorkspace,
+                      onRemoved: () => onRemoveAttachment(attachment),
+                    ),
+                ],
+              ),
+            ),
+          Divider(height: 1, thickness: 1, color: borderColor(theme)),
+          Padding(
+            padding: EdgeInsets.fromLTRB(
+              compactWorkspace ? 8 : 10,
+              compactWorkspace ? 4 : 6,
+              compactWorkspace ? 8 : 10,
+              compactWorkspace ? 4 : 6,
+            ),
+            child: LayoutBuilder(
+              builder: (context, constraints) {
+                final inlineControls = [
+                  attachmentButton,
+                  modelControl,
+                  reasoningControl,
+                  permissionControl,
+                ];
+                if (constraints.maxWidth >= (compactWorkspace ? 500 : 600)) {
+                  return Row(
+                    children: [
+                      Expanded(
+                        child: SingleChildScrollView(
+                          scrollDirection: Axis.horizontal,
+                          child: Row(
+                            children: [
+                              for (
+                                var index = 0;
+                                index < inlineControls.length;
+                                index += 1
+                              ) ...[
+                                if (index > 0)
+                                  SizedBox(width: compactWorkspace ? 8 : 10),
+                                inlineControls[index],
+                              ],
+                            ],
+                          ),
+                        ),
+                      ),
+                      SizedBox(width: compactWorkspace ? 4 : 6),
+                      submitButton,
+                    ],
+                  );
+                }
+
+                return Wrap(
+                  spacing: compactWorkspace ? 8 : 10,
+                  runSpacing: compactWorkspace ? 6 : 8,
+                  crossAxisAlignment: WrapCrossAlignment.center,
+                  children: [...inlineControls, submitButton],
+                );
+              },
+            ),
+          ),
+        ],
+      ),
+    );
     if (compactWorkspace) {
       return DecoratedBox(
         decoration: BoxDecoration(
@@ -2154,116 +2478,7 @@ class _ComposerDock extends StatelessWidget {
           top: false,
           child: Padding(
             padding: const EdgeInsets.fromLTRB(10, 6, 10, 8),
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Row(
-                  children: [
-                    Expanded(
-                      child: Wrap(
-                        spacing: 6,
-                        runSpacing: 6,
-                        children: [
-                          _SessionMetaBadge(compact: true, value: modelSummary),
-                          _SessionMetaBadge(
-                            compact: true,
-                            value: _modeLabel(context, selectedMode),
-                          ),
-                          if (cwdSummary != null)
-                            _SessionMetaBadge(compact: true, value: cwdSummary),
-                        ],
-                      ),
-                    ),
-                    if (hasActiveTurn)
-                      Padding(
-                        padding: const EdgeInsets.only(left: 6),
-                        child: IconButton(
-                          onPressed: submitting
-                              ? null
-                              : () => unawaited(onInterrupt()),
-                          tooltip: strings.text('Interrupt', '中断'),
-                          visualDensity: VisualDensity.compact,
-                          icon: const Icon(Icons.stop_circle_outlined),
-                        ),
-                      ),
-                    IconButton(
-                      onPressed: onToggleOptions,
-                      tooltip: optionsExpanded
-                          ? strings.text('Hide controls', '收起控制项')
-                          : strings.text('Show controls', '展开控制项'),
-                      visualDensity: VisualDensity.compact,
-                      icon: Icon(
-                        optionsExpanded
-                            ? Icons.keyboard_arrow_down
-                            : Icons.tune,
-                      ),
-                    ),
-                  ],
-                ),
-                const SizedBox(height: 6),
-                Row(
-                  crossAxisAlignment: CrossAxisAlignment.end,
-                  children: [
-                    Expanded(
-                      child: TextField(
-                        controller: composerController,
-                        minLines: 1,
-                        maxLines: 3,
-                        enabled: !submitting && !runtimeLoading,
-                        decoration: InputDecoration(
-                          isDense: true,
-                          labelText: hasActiveTurn
-                              ? strings.text('Steering message', '引导消息')
-                              : strings.text('Prompt', '提示词'),
-                          hintText: hasActiveTurn
-                              ? strings.text(
-                                  'Provide steering or clarifying instructions',
-                                  '提供引导或澄清指令',
-                                )
-                              : strings.text(
-                                  'Tell Codex what to do next',
-                                  '告诉 Codex 下一步做什么',
-                                ),
-                        ),
-                      ),
-                    ),
-                    const SizedBox(width: 8),
-                    submitButton,
-                  ],
-                ),
-                if (optionsExpanded) ...[
-                  const SizedBox(height: 8),
-                  LayoutBuilder(
-                    builder: (context, constraints) {
-                      if (constraints.maxWidth >= 980) {
-                        return Row(
-                          crossAxisAlignment: CrossAxisAlignment.end,
-                          children: [
-                            Expanded(flex: 3, child: modelField),
-                            const SizedBox(width: 8),
-                            Expanded(flex: 4, child: modeField),
-                            const SizedBox(width: 8),
-                            Expanded(flex: 3, child: cwdField),
-                          ],
-                        );
-                      }
-
-                      return Wrap(
-                        spacing: 8,
-                        runSpacing: 8,
-                        crossAxisAlignment: WrapCrossAlignment.center,
-                        children: [
-                          SizedBox(width: 240, child: modelField),
-                          SizedBox(width: 300, child: modeField),
-                          SizedBox(width: 240, child: cwdField),
-                        ],
-                      );
-                    },
-                  ),
-                ],
-              ],
-            ),
+            child: composerField,
           ),
         ),
       );
@@ -2287,104 +2502,16 @@ class _ComposerDock extends StatelessWidget {
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               if (!compactWorkspace && hasActiveTurn)
-                Row(
-                  children: [
-                    Expanded(
-                      child: Text(
-                        helperText,
-                        style: theme.textTheme.bodyMedium?.copyWith(
-                          fontSize: compactWorkspace ? 12 : null,
-                          color: secondaryTextColor(theme),
-                        ),
-                      ),
-                    ),
-                    if (hasActiveTurn)
-                      OutlinedButton.icon(
-                        onPressed: submitting
-                            ? null
-                            : () => unawaited(onInterrupt()),
-                        icon: const Icon(Icons.stop_circle_outlined),
-                        label: Text(strings.text('Interrupt', '中断')),
-                      ),
-                  ],
+                Text(
+                  helperText,
+                  style: theme.textTheme.bodyMedium?.copyWith(
+                    fontSize: compactWorkspace ? 12 : null,
+                    color: secondaryTextColor(theme),
+                  ),
                 ),
               if (!compactWorkspace && hasActiveTurn)
                 SizedBox(height: compactWorkspace ? 6 : 12),
-              if (compactWorkspace && hasActiveTurn)
-                Align(
-                  alignment: Alignment.centerRight,
-                  child: Padding(
-                    padding: const EdgeInsets.only(bottom: 6),
-                    child: OutlinedButton.icon(
-                      onPressed: submitting
-                          ? null
-                          : () => unawaited(onInterrupt()),
-                      icon: const Icon(Icons.stop_circle_outlined),
-                      label: Text(strings.text('Interrupt', '中断')),
-                    ),
-                  ),
-                ),
-              TextField(
-                controller: composerController,
-                minLines: compactWorkspace ? 1 : 3,
-                maxLines: compactWorkspace ? 3 : 6,
-                enabled: !submitting && !runtimeLoading,
-                decoration: InputDecoration(
-                  isDense: compactWorkspace,
-                  labelText: hasActiveTurn
-                      ? strings.text('Steering message', '引导消息')
-                      : strings.text('Prompt', '提示词'),
-                  hintText: hasActiveTurn
-                      ? strings.text(
-                          'Provide steering or clarifying instructions',
-                          '提供引导或澄清指令',
-                        )
-                      : strings.text(
-                          'Tell Codex what to do next',
-                          '告诉 Codex 下一步做什么',
-                        ),
-                ),
-              ),
-              SizedBox(height: compactWorkspace ? 6 : 12),
-              LayoutBuilder(
-                builder: (context, constraints) {
-                  if (compactWorkspace && constraints.maxWidth >= 980) {
-                    return Row(
-                      crossAxisAlignment: CrossAxisAlignment.end,
-                      children: [
-                        Expanded(flex: 3, child: modelField),
-                        const SizedBox(width: 8),
-                        Expanded(flex: 4, child: modeField),
-                        const SizedBox(width: 8),
-                        Expanded(flex: 3, child: cwdField),
-                        const SizedBox(width: 8),
-                        submitButton,
-                      ],
-                    );
-                  }
-
-                  return Wrap(
-                    spacing: compactWorkspace ? 8 : 12,
-                    runSpacing: compactWorkspace ? 8 : 12,
-                    crossAxisAlignment: WrapCrossAlignment.center,
-                    children: [
-                      SizedBox(
-                        width: compactWorkspace ? 240 : 340,
-                        child: modelField,
-                      ),
-                      SizedBox(
-                        width: compactWorkspace ? 300 : 360,
-                        child: modeField,
-                      ),
-                      SizedBox(
-                        width: compactWorkspace ? 240 : 320,
-                        child: cwdField,
-                      ),
-                      submitButton,
-                    ],
-                  );
-                },
-              ),
+              composerField,
             ],
           ),
         ),
@@ -2794,6 +2921,159 @@ class _SessionMetaBadge extends StatelessWidget {
   }
 }
 
+class _ComposerPasteTextAction extends Action<PasteTextIntent> {
+  _ComposerPasteTextAction({required this.onPaste});
+
+  final Future<bool> Function() onPaste;
+
+  @override
+  Object? invoke(PasteTextIntent intent) {
+    unawaited(onPaste());
+    return null;
+  }
+}
+
+class _ComposerAttachmentChip extends StatelessWidget {
+  const _ComposerAttachmentChip({
+    required this.attachment,
+    required this.onRemoved,
+    this.compact = false,
+  });
+
+  final CodexInputPart attachment;
+  final VoidCallback onRemoved;
+  final bool compact;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final label = attachment.displayLabel.trim().isEmpty
+        ? attachment.previewText
+        : attachment.displayLabel.trim();
+    return Container(
+      padding: EdgeInsets.only(
+        left: compact ? 10 : 12,
+        right: compact ? 6 : 8,
+        top: compact ? 5 : 6,
+        bottom: compact ? 5 : 6,
+      ),
+      decoration: BoxDecoration(
+        color: mutedPanelBackgroundColor(theme),
+        borderRadius: BorderRadius.circular(999),
+        border: Border.all(color: borderColor(theme)),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(
+            attachment.type == CodexInputPartType.localImage
+                ? Icons.image_outlined
+                : Icons.description_outlined,
+            size: compact ? 14 : 16,
+            color: secondaryTextColor(theme),
+          ),
+          SizedBox(width: compact ? 6 : 8),
+          ConstrainedBox(
+            constraints: BoxConstraints(maxWidth: compact ? 180 : 240),
+            child: Text(
+              label,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: theme.textTheme.labelMedium,
+            ),
+          ),
+          SizedBox(width: compact ? 2 : 4),
+          InkWell(
+            onTap: onRemoved,
+            borderRadius: BorderRadius.circular(999),
+            child: Padding(
+              padding: const EdgeInsets.all(2),
+              child: Icon(Icons.close_rounded, size: compact ? 14 : 16),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _InlineComposerMenu<T> extends StatelessWidget {
+  const _InlineComposerMenu({
+    required this.label,
+    required this.items,
+    required this.onSelected,
+    this.enabled = true,
+    this.tooltip,
+  });
+
+  final String label;
+  final List<PopupMenuEntry<T>> items;
+  final ValueChanged<T> onSelected;
+  final bool enabled;
+  final String? tooltip;
+
+  @override
+  Widget build(BuildContext context) {
+    final child = _InlineComposerValue(
+      label: label,
+      trailingIcon: enabled ? Icons.expand_more_rounded : null,
+      enabled: enabled,
+    );
+    if (!enabled) {
+      return Tooltip(message: tooltip ?? label, child: child);
+    }
+    return PopupMenuButton<T>(
+      tooltip: tooltip,
+      enabled: enabled,
+      padding: EdgeInsets.zero,
+      onSelected: onSelected,
+      itemBuilder: (context) => items,
+      child: child,
+    );
+  }
+}
+
+class _InlineComposerValue extends StatelessWidget {
+  const _InlineComposerValue({
+    required this.label,
+    this.trailingIcon,
+    this.enabled = true,
+  });
+
+  final String label;
+  final IconData? trailingIcon;
+  final bool enabled;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final color = enabled
+        ? theme.colorScheme.onSurface
+        : secondaryTextColor(theme);
+    return ConstrainedBox(
+      constraints: const BoxConstraints(minHeight: 22),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          ConstrainedBox(
+            constraints: const BoxConstraints(maxWidth: 190),
+            child: Text(
+              label,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: theme.textTheme.labelMedium?.copyWith(color: color),
+            ),
+          ),
+          if (trailingIcon != null) ...[
+            const SizedBox(width: 2),
+            Icon(trailingIcon, size: 14, color: color),
+          ],
+        ],
+      ),
+    );
+  }
+}
+
 class _StatusPill extends StatelessWidget {
   const _StatusPill({required this.label, this.compact = false});
 
@@ -2888,11 +3168,48 @@ String _providerLabel(BuildContext context, String? value) {
 
 String _modeLabel(BuildContext context, CodexComposerMode mode) {
   return switch (mode) {
-    CodexComposerMode.chat => context.strings.text('Chat', '聊天'),
-    CodexComposerMode.agent => context.strings.text('Agent', '代理'),
-    CodexComposerMode.agentFullAccess => context.strings.text(
-      'Agent (Full Access)',
-      '代理（完全访问）',
+    CodexComposerMode.chat => context.strings.text('No file changes', '不修改文件'),
+    CodexComposerMode.agent => context.strings.text(
+      'Current project only',
+      '仅当前项目',
     ),
+    CodexComposerMode.agentFullAccess => context.strings.text(
+      'Includes outside project',
+      '包括项目外路径',
+    ),
+  };
+}
+
+String _permissionLabel(BuildContext context, CodexComposerMode mode) {
+  return switch (mode) {
+    CodexComposerMode.chat => context.strings.text('Read only', '只读'),
+    CodexComposerMode.agent => context.strings.text('Edit project', '项目内修改'),
+    CodexComposerMode.agentFullAccess => context.strings.text(
+      'Full access',
+      '完全访问',
+    ),
+  };
+}
+
+String _reasoningEffortLabel(
+  BuildContext context,
+  CodexModelOption? selectedModel,
+) {
+  final rawValue =
+      selectedModel?.defaultReasoningEffort?.trim().isNotEmpty == true
+      ? selectedModel!.defaultReasoningEffort!.trim()
+      : selectedModel != null &&
+            selectedModel.supportedReasoningEfforts.isNotEmpty
+      ? selectedModel.supportedReasoningEfforts.first.trim()
+      : '';
+  return switch (rawValue) {
+    'low' => context.strings.text('Low', '低'),
+    'medium' => context.strings.text('Medium', '中'),
+    'high' => context.strings.text('High', '高'),
+    'very_high' || 'very-high' => context.strings.text('Very high', '超高'),
+    _ when rawValue.isNotEmpty => context.strings.humanizeMachineLabel(
+      rawValue,
+    ),
+    _ => context.strings.text('Auto', '自动'),
   };
 }

@@ -5,6 +5,7 @@ import 'dart:io';
 import '../models/bridge_config.dart';
 import '../models/bridge_health.dart';
 import '../models/codex_composer_mode.dart';
+import '../models/codex_input_part.dart';
 import '../models/codex_model_option.dart';
 import '../models/codex_pending_request.dart';
 import '../models/codex_thread_bundle.dart';
@@ -200,7 +201,7 @@ class AppServerRpcClient {
   }
 
   Future<CodexThreadBundle> createThread({
-    required String message,
+    required List<CodexInputPart> input,
     required CodexComposerMode mode,
     String? model,
     String? cwd,
@@ -233,9 +234,7 @@ class AppServerRpcClient {
     final threadId = readString(thread, const ['id']);
     await _request<Map<String, dynamic>>('turn/start', {
       'threadId': threadId,
-      'input': [
-        {'type': 'text', 'text': message, 'text_elements': []},
-      ],
+      'input': codexInputPartsToJson(input),
     });
 
     try {
@@ -256,7 +255,7 @@ class AppServerRpcClient {
 
   Future<CodexThreadRuntime> sendMessage({
     required String threadId,
-    required String message,
+    required List<CodexInputPart> input,
     String? expectedTurnId,
     String? model,
     CodexComposerMode? mode,
@@ -268,9 +267,7 @@ class AppServerRpcClient {
       await _request<void>('turn/steer', {
         'threadId': threadId,
         'expectedTurnId': expectedTurnId,
-        'input': [
-          {'type': 'text', 'text': message, 'text_elements': []},
-        ],
+        'input': codexInputPartsToJson(input),
       });
       return getThreadRuntime(threadId);
     }
@@ -294,9 +291,7 @@ class AppServerRpcClient {
 
     await _request<void>('turn/start', {
       'threadId': threadId,
-      'input': [
-        {'type': 'text', 'text': message, 'text_elements': []},
-      ],
+      'input': codexInputPartsToJson(input),
     });
     return getThreadRuntime(threadId);
   }
@@ -894,11 +889,27 @@ class AppServerRpcClient {
       }
     }
 
+    final itemStatesById = _threadItemsById(thread);
+    final stalePendingRequestIds = <String>[];
     final pendingRequests =
         _pendingServerRequests.values
             .where((request) => request.threadId == threadId)
+            .where((request) {
+              final keep = _shouldKeepPendingServerRequest(
+                request,
+                activeTurnId: activeTurnId,
+                itemStatesById: itemStatesById,
+              );
+              if (!keep) {
+                stalePendingRequestIds.add(request.id);
+              }
+              return keep;
+            })
             .toList()
           ..sort((left, right) => right.receivedAt.compareTo(left.receivedAt));
+    for (final requestId in stalePendingRequestIds) {
+      _pendingServerRequests.remove(requestId);
+    }
 
     return CodexThreadRuntime(
       threadId: threadId,
@@ -989,7 +1000,7 @@ class AppServerRpcClient {
           body: readString(item, const ['aggregatedOutput']).trim().isNotEmpty
               ? readString(item, const ['aggregatedOutput'])
               : 'cwd: ${readString(item, const ['cwd'])}\nexitCode: ${item['exitCode'] ?? 'n/a'}',
-          status: readString(item, const ['status'], fallback: 'unknown'),
+          status: _approvalAwareItemStatus(item, fallback: 'unknown'),
           actor: 'assistant',
           createdAt: createdAt,
           raw: raw,
@@ -1008,7 +1019,7 @@ class AppServerRpcClient {
                     '${readString(change, const ['kind'])} ${readString(change, const ['path'])}',
               )
               .join('\n'),
-          status: readString(item, const ['status'], fallback: 'unknown'),
+          status: _approvalAwareItemStatus(item, fallback: 'unknown'),
           actor: 'assistant',
           createdAt: createdAt,
           raw: raw,
@@ -1399,6 +1410,7 @@ class AppServerRpcClient {
       return null;
     }
 
+    final item = asJsonMap(params['item']);
     final turn = asJsonMap(params['turn']);
     return _PendingServerRequestRecord(
       id: _requestKey(rawId),
@@ -1407,10 +1419,13 @@ class AppServerRpcClient {
       params: params,
       receivedAt: DateTime.now().toUtc(),
       threadId: _optionalString(
-        params['threadId'] ?? params['conversationId'] ?? turn['threadId'],
+        params['threadId'] ??
+            params['conversationId'] ??
+            turn['threadId'] ??
+            item['threadId'],
       ),
-      turnId: _optionalString(params['turnId']),
-      itemId: _optionalString(params['itemId']),
+      turnId: _optionalString(params['turnId'] ?? turn['id'] ?? item['turnId']),
+      itemId: _optionalString(params['itemId'] ?? item['id']),
     );
   }
 
@@ -2704,6 +2719,97 @@ String? _normalizeCwd(String? cwd) {
 
 String? _joinCommand(Object? value) {
   return joinCommandParts(value);
+}
+
+Map<String, Map<String, dynamic>> _threadItemsById(
+  Map<String, dynamic> thread,
+) {
+  final itemsById = <String, Map<String, dynamic>>{};
+  for (final turn in asJsonList(thread['turns']).map(asJsonMap)) {
+    for (final item in asJsonList(turn['items']).map(asJsonMap)) {
+      final itemId = _optionalString(item['id']);
+      if (itemId != null) {
+        itemsById[itemId] = item;
+      }
+    }
+  }
+  return itemsById;
+}
+
+bool _shouldKeepPendingServerRequest(
+  _PendingServerRequestRecord request, {
+  required String? activeTurnId,
+  required Map<String, Map<String, dynamic>> itemStatesById,
+}) {
+  if (activeTurnId == null) {
+    return false;
+  }
+  if (!_isApprovalRequestMethod(request.method)) {
+    return true;
+  }
+  final itemId = request.itemId;
+  if (itemId == null) {
+    return true;
+  }
+  final item = itemStatesById[itemId];
+  if (item == null || item.isEmpty) {
+    return true;
+  }
+  return _itemAwaitingApproval(item);
+}
+
+bool _isApprovalRequestMethod(String method) {
+  switch (method) {
+    case 'item/commandExecution/requestApproval':
+    case 'item/fileChange/requestApproval':
+    case 'item/permissions/requestApproval':
+    case 'execCommandApproval':
+    case 'applyPatchApproval':
+      return true;
+    default:
+      return false;
+  }
+}
+
+bool _itemAwaitingApproval(Map<String, dynamic> item) {
+  final approvalStatus = _optionalString(item['approvalStatus']);
+  if (approvalStatus != null) {
+    return _isPendingApprovalState(approvalStatus);
+  }
+  final status = _optionalString(item['status']);
+  if (status == null) {
+    return true;
+  }
+  return _isPendingApprovalState(status);
+}
+
+bool _isPendingApprovalState(String value) {
+  switch (value.trim().toLowerCase()) {
+    case 'pending':
+    case 'requested':
+    case 'requires_approval':
+    case 'requires-approval':
+    case 'needs_approval':
+    case 'needs-approval':
+    case 'waiting':
+    case 'waiting_for_approval':
+    case 'waiting-for-approval':
+      return true;
+    default:
+      return false;
+  }
+}
+
+String _approvalAwareItemStatus(
+  Map<String, dynamic> item, {
+  required String fallback,
+}) {
+  final approvalStatus = _optionalString(item['approvalStatus']);
+  if (approvalStatus != null) {
+    return approvalStatus;
+  }
+  final status = _optionalString(item['status']);
+  return status ?? fallback;
 }
 
 String _requestKey(Object? rawId) => rawId?.toString() ?? '';

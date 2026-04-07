@@ -3,6 +3,7 @@ import 'dart:async';
 import '../models/bridge_config.dart';
 import '../models/bridge_health.dart';
 import '../models/codex_composer_mode.dart';
+import '../models/codex_input_part.dart';
 import '../models/codex_model_option.dart';
 import '../models/codex_thread_bundle.dart';
 import '../models/codex_thread_runtime.dart';
@@ -29,7 +30,7 @@ abstract class CodexRepository {
   Future<CodexThreadRuntime> getThreadRuntime(String threadId);
 
   Future<CodexThreadBundle> createThread({
-    required String message,
+    required List<CodexInputPart> input,
     required CodexComposerMode mode,
     String? model,
     String? cwd,
@@ -37,7 +38,7 @@ abstract class CodexRepository {
 
   Future<CodexThreadRuntime> sendMessage({
     required String threadId,
-    required String message,
+    required List<CodexInputPart> input,
     String? expectedTurnId,
     String? model,
     CodexComposerMode? mode,
@@ -95,13 +96,13 @@ class AppServerCodexRepository implements CodexRepository {
 
   @override
   Future<CodexThreadBundle> createThread({
-    required String message,
+    required List<CodexInputPart> input,
     required CodexComposerMode mode,
     String? model,
     String? cwd,
   }) {
     return _client.createThread(
-      message: message,
+      input: input,
       mode: mode,
       model: model,
       cwd: cwd,
@@ -111,7 +112,7 @@ class AppServerCodexRepository implements CodexRepository {
   @override
   Future<CodexThreadRuntime> sendMessage({
     required String threadId,
-    required String message,
+    required List<CodexInputPart> input,
     String? expectedTurnId,
     String? model,
     CodexComposerMode? mode,
@@ -119,7 +120,7 @@ class AppServerCodexRepository implements CodexRepository {
   }) {
     return _client.sendMessage(
       threadId: threadId,
-      message: message,
+      input: input,
       expectedTurnId: expectedTurnId,
       model: model,
       mode: mode,

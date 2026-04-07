@@ -736,21 +736,54 @@ class _DiffSyntaxHighlighter {
 }
 
 String normalizeFileChangeKind(String value) {
-  final normalized = value.trim().toLowerCase();
-  if (normalized.contains('delete') || normalized.contains('remove')) {
+  final normalized = value
+      .replaceAllMapped(
+        RegExp(r'([a-z])([A-Z])'),
+        (match) => '${match.group(1)} ${match.group(2)}',
+      )
+      .trim()
+      .toLowerCase();
+  final tokens = normalized
+      .split(RegExp(r'[^a-z0-9]+'))
+      .where((token) => token.isNotEmpty)
+      .toList(growable: false);
+
+  bool hasAny(List<String> candidates) {
+    for (final token in tokens) {
+      if (candidates.contains(token)) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  if (hasAny(const ['delete', 'deleted', 'remove', 'removed'])) {
     return 'deleted';
   }
-  if (normalized.contains('rename') || normalized.contains('move')) {
-    return 'renamed';
-  }
-  if (normalized.contains('add') || normalized.contains('create')) {
+  if (hasAny(const ['add', 'added', 'create', 'created'])) {
     return 'added';
   }
-  if (normalized.contains('modify') ||
-      normalized.contains('update') ||
-      normalized.contains('edit') ||
-      normalized.contains('change')) {
+  if (hasAny(const [
+    'modify',
+    'modified',
+    'update',
+    'updated',
+    'edit',
+    'edited',
+    'change',
+    'changed',
+    'write',
+    'writes',
+    'wrote',
+    'overwrite',
+    'overwritten',
+    'replace',
+    'replaced',
+  ])) {
     return 'modified';
+  }
+  if (hasAny(const ['rename', 'renamed', 'move', 'moved'])) {
+    return 'renamed';
   }
   return normalized.isEmpty ? 'modified' : normalized;
 }

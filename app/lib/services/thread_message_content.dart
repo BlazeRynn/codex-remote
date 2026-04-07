@@ -78,10 +78,12 @@ UserMessagePart? _parseUserInputPart(Map<String, dynamic> item) {
       );
     case 'mention':
       final name = readString(item, const ['name']);
+      final path = readString(item, const ['path']);
       return UserMessagePart(
         type: UserMessagePartType.mention,
-        text: '[mention] $name',
+        text: _renderMentionText(name: name, path: path),
         name: name.isEmpty ? null : name,
+        path: path.isEmpty ? null : path,
       );
     default:
       final text = readString(item, const ['text', 'message', 'content']);
@@ -89,4 +91,28 @@ UserMessagePart? _parseUserInputPart(Map<String, dynamic> item) {
           ? null
           : UserMessagePart(type: UserMessagePartType.other, text: text);
   }
+}
+
+String _renderMentionText({required String name, required String path}) {
+  final trimmedPath = path.trim();
+  final label = name.trim().isNotEmpty ? name.trim() : _basename(trimmedPath);
+  if (trimmedPath.isNotEmpty && !_looksLikeStructuredMention(trimmedPath)) {
+    return label.isEmpty ? '[file]' : '[file] $label';
+  }
+  return label.isEmpty ? '[mention]' : '[mention] $label';
+}
+
+bool _looksLikeStructuredMention(String value) {
+  return value.contains('://');
+}
+
+String _basename(String value) {
+  if (value.isEmpty) {
+    return '';
+  }
+  final segments = value
+      .split(RegExp(r'[\\/]'))
+      .where((segment) => segment.trim().isNotEmpty)
+      .toList(growable: false);
+  return segments.isEmpty ? value : segments.last;
 }
