@@ -1,4 +1,4 @@
-# Codex Control
+# Codex Remote
 
 Desktop and mobile companion for viewing and operating local Codex threads.
 
