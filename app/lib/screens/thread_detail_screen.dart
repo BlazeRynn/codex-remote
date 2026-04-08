@@ -1412,7 +1412,8 @@ class _ThreadDetailPaneState extends State<ThreadDetailPane>
     super.build(context);
     final theme = Theme.of(context);
     final strings = context.strings;
-    final compactWorkspace = widget.workspaceStyle;
+    final compactLayout =
+        widget.workspaceStyle || MediaQuery.sizeOf(context).width < 640;
     final conversationProjection = projectThreadMessageList(
       _realtimeAccumulator.items,
     );
@@ -1427,10 +1428,10 @@ class _ThreadDetailPaneState extends State<ThreadDetailPane>
         ? _humanize(context, _liveEvents.first.type)
         : _liveEvents.first.description.trim();
     final padding = EdgeInsets.fromLTRB(
-      compactWorkspace ? 10 : 16,
-      compactWorkspace ? 6 : 14,
-      compactWorkspace ? 10 : 16,
-      compactWorkspace ? 4 : 10,
+      compactLayout ? 10 : 16,
+      compactLayout ? 6 : 14,
+      compactLayout ? 10 : 16,
+      compactLayout ? 4 : 10,
     );
     final tailBodyLength = conversationProjection.tailBodyLength;
     final effectiveActiveThreadId =
@@ -1470,6 +1471,7 @@ class _ThreadDetailPaneState extends State<ThreadDetailPane>
               activeTurnId: _runtime.activeTurnId,
               onRefresh: _reloadAll,
               workspaceStyle: widget.workspaceStyle,
+              compact: compactLayout,
             ),
           ),
           if (_controlError != null)
@@ -1478,11 +1480,11 @@ class _ThreadDetailPaneState extends State<ThreadDetailPane>
                 padding.left,
                 0,
                 padding.right,
-                compactWorkspace ? 6 : 10,
+                compactLayout ? 6 : 10,
               ),
               child: _InlineNotice(message: _controlError!, error: true),
             ),
-          if (compactWorkspace &&
+          if (compactLayout &&
               _liveError != null &&
               _liveError!.trim().isNotEmpty)
             Padding(
@@ -1498,7 +1500,7 @@ class _ThreadDetailPaneState extends State<ThreadDetailPane>
               onRefresh: _reloadAll,
               onScrollNotification: _handleTimelineScrollNotification,
               workspaceStyle: widget.workspaceStyle,
-              showLiveStatus: !compactWorkspace,
+              showLiveStatus: !compactLayout,
               liveStateLabel: _liveConnectionState.name,
               liveMessage: liveMessage,
               hasActiveTurn: _runtime.activeTurnId != null,
@@ -1550,6 +1552,7 @@ class _ThreadDetailPaneState extends State<ThreadDetailPane>
             onPasteFromClipboard: _pasteComposerContent,
             onRemoveAttachment: _removeComposerAttachment,
             workspaceStyle: widget.workspaceStyle,
+            compact: compactLayout,
           ),
         ],
       ),
@@ -1609,6 +1612,7 @@ class _WorkspaceHeaderPanel extends StatelessWidget {
     required this.activeTurnId,
     required this.onRefresh,
     this.workspaceStyle = false,
+    this.compact = false,
   });
 
   final CodexThreadSummary thread;
@@ -1617,11 +1621,13 @@ class _WorkspaceHeaderPanel extends StatelessWidget {
   final String? activeTurnId;
   final Future<void> Function() onRefresh;
   final bool workspaceStyle;
+  final bool compact;
 
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final strings = context.strings;
+    final compactLayout = compact || workspaceStyle;
     final statusLine = <String>[
       _providerLabel(context, thread.provider),
       _humanize(context, thread.status),
@@ -1688,6 +1694,48 @@ class _WorkspaceHeaderPanel extends StatelessWidget {
               ),
             ],
           ),
+        ),
+      );
+    }
+    if (compactLayout) {
+      return _SurfaceSection(
+        compact: true,
+        child: Row(
+          children: [
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    strings.text('Current session', '当前会话'),
+                    style: theme.textTheme.labelMedium?.copyWith(
+                      color: secondaryTextColor(theme),
+                      letterSpacing: 0.6,
+                    ),
+                  ),
+                  const SizedBox(height: 4),
+                  Text(
+                    statusLine,
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis,
+                    style: theme.textTheme.bodySmall?.copyWith(
+                      color: secondaryTextColor(theme),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(width: 8),
+            IconButton.filledTonal(
+              onPressed: () {
+                unawaited(onRefresh());
+              },
+              tooltip: strings.text('Refresh', '刷新'),
+              visualDensity: VisualDensity.compact,
+              iconSize: 18,
+              icon: const Icon(Icons.sync),
+            ),
+          ],
         ),
       );
     }
@@ -2155,6 +2203,7 @@ class _ComposerDock extends StatelessWidget {
     required this.onPasteFromClipboard,
     required this.onRemoveAttachment,
     this.workspaceStyle = false,
+    this.compact = false,
   });
 
   final TextEditingController composerController;
@@ -2174,12 +2223,13 @@ class _ComposerDock extends StatelessWidget {
   final Future<bool> Function() onPasteFromClipboard;
   final ValueChanged<CodexInputPart> onRemoveAttachment;
   final bool workspaceStyle;
+  final bool compact;
 
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final strings = context.strings;
-    final compactWorkspace = workspaceStyle;
+    final compactWorkspace = compact || workspaceStyle;
     final helperText = hasActiveTurn
         ? strings.text(
             'Steer the active turn, or leave the box empty to interrupt it.',
@@ -2205,7 +2255,9 @@ class _ComposerDock extends StatelessWidget {
               strings.text('Model auto', '模型自动');
     final reasoningLabel = _reasoningEffortLabel(context, selectedModel);
     final permissionLabel = _permissionLabel(context, selectedMode);
-    final composerLabel = hasActiveTurn ? null : strings.text('Prompt', '提示词');
+    final composerLabel = hasActiveTurn || compactWorkspace
+        ? null
+        : strings.text('Prompt', '提示词');
     final composerHint = hasActiveTurn
         ? strings.text(
             'Provide steering or clarifying instructions',
@@ -2214,6 +2266,7 @@ class _ComposerDock extends StatelessWidget {
         : strings.text('Tell Codex what to do next', '告诉 Codex 下一步做什么');
     final modelControl = _InlineComposerMenu<String>(
       label: modelLabel,
+      compact: compactWorkspace,
       enabled: !loadingModels && !submitting && models.isNotEmpty,
       tooltip: strings.text('Select model', '选择模型'),
       items: models
@@ -2236,10 +2289,14 @@ class _ComposerDock extends StatelessWidget {
         'Showing the selected model default reasoning effort.',
         '当前显示所选模型的默认推理强度。',
       ),
-      child: _InlineComposerValue(label: reasoningLabel),
+      child: _InlineComposerValue(
+        label: reasoningLabel,
+        compact: compactWorkspace,
+      ),
     );
     final permissionControl = _InlineComposerMenu<CodexComposerMode>(
       label: permissionLabel,
+      compact: compactWorkspace,
       enabled: !hasActiveTurn && !submitting,
       tooltip: hasActiveTurn
           ? strings.text(
@@ -2280,6 +2337,10 @@ class _ComposerDock extends StatelessWidget {
         visualDensity: VisualDensity.compact,
         splashRadius: compactWorkspace ? 16 : 18,
         iconSize: compactWorkspace ? 16 : 18,
+        constraints: BoxConstraints.tightFor(
+          width: compactWorkspace ? 32 : 36,
+          height: compactWorkspace ? 32 : 36,
+        ),
         icon: const Icon(Icons.attach_file_rounded),
       ),
     );
@@ -2314,8 +2375,8 @@ class _ComposerDock extends StatelessWidget {
                 alpha: 0.55,
               ),
               minimumSize: Size(
-                compactWorkspace ? 30 : 34,
-                compactWorkspace ? 30 : 34,
+                compactWorkspace ? 32 : 34,
+                compactWorkspace ? 32 : 34,
               ),
             ),
             icon: submitting
@@ -2369,8 +2430,12 @@ class _ComposerDock extends StatelessWidget {
             },
             child: TextField(
               controller: composerController,
-              minLines: hasActiveTurn ? (compactWorkspace ? 3 : 6) : 2,
-              maxLines: hasActiveTurn ? (compactWorkspace ? 8 : 12) : 6,
+              minLines: hasActiveTurn
+                  ? (compactWorkspace ? 2 : 6)
+                  : (compactWorkspace ? 1 : 2),
+              maxLines: hasActiveTurn
+                  ? (compactWorkspace ? 6 : 12)
+                  : (compactWorkspace ? 4 : 6),
               enabled: !submitting && !runtimeLoading,
               decoration: InputDecoration(
                 isDense: compactWorkspace,
@@ -2385,9 +2450,9 @@ class _ComposerDock extends StatelessWidget {
                 hoverColor: Colors.transparent,
                 contentPadding: EdgeInsets.fromLTRB(
                   compactWorkspace ? 12 : 16,
-                  compactWorkspace ? 10 : 12,
+                  compactWorkspace ? 6 : 12,
                   compactWorkspace ? 12 : 16,
-                  compactWorkspace ? 8 : 12,
+                  compactWorkspace ? 6 : 12,
                 ),
               ),
             ),
@@ -2417,9 +2482,9 @@ class _ComposerDock extends StatelessWidget {
           Padding(
             padding: EdgeInsets.fromLTRB(
               compactWorkspace ? 8 : 10,
-              compactWorkspace ? 4 : 6,
+              compactWorkspace ? 6 : 6,
               compactWorkspace ? 8 : 10,
-              compactWorkspace ? 4 : 6,
+              compactWorkspace ? 6 : 6,
             ),
             child: LayoutBuilder(
               builder: (context, constraints) {
@@ -2429,7 +2494,8 @@ class _ComposerDock extends StatelessWidget {
                   reasoningControl,
                   permissionControl,
                 ];
-                if (constraints.maxWidth >= (compactWorkspace ? 500 : 600)) {
+                if (compactWorkspace ||
+                    constraints.maxWidth >= (compactWorkspace ? 500 : 600)) {
                   return Row(
                     children: [
                       Expanded(
@@ -3003,6 +3069,7 @@ class _InlineComposerMenu<T> extends StatelessWidget {
     required this.items,
     required this.onSelected,
     this.enabled = true,
+    this.compact = false,
     this.tooltip,
   });
 
@@ -3010,6 +3077,7 @@ class _InlineComposerMenu<T> extends StatelessWidget {
   final List<PopupMenuEntry<T>> items;
   final ValueChanged<T> onSelected;
   final bool enabled;
+  final bool compact;
   final String? tooltip;
 
   @override
@@ -3018,6 +3086,7 @@ class _InlineComposerMenu<T> extends StatelessWidget {
       label: label,
       trailingIcon: enabled ? Icons.expand_more_rounded : null,
       enabled: enabled,
+      compact: compact,
     );
     if (!enabled) {
       return Tooltip(message: tooltip ?? label, child: child);
@@ -3038,11 +3107,13 @@ class _InlineComposerValue extends StatelessWidget {
     required this.label,
     this.trailingIcon,
     this.enabled = true,
+    this.compact = false,
   });
 
   final String label;
   final IconData? trailingIcon;
   final bool enabled;
+  final bool compact;
 
   @override
   Widget build(BuildContext context) {
@@ -3050,25 +3121,39 @@ class _InlineComposerValue extends StatelessWidget {
     final color = enabled
         ? theme.colorScheme.onSurface
         : secondaryTextColor(theme);
-    return ConstrainedBox(
-      constraints: const BoxConstraints(minHeight: 22),
-      child: Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          ConstrainedBox(
-            constraints: const BoxConstraints(maxWidth: 190),
-            child: Text(
-              label,
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-              style: theme.textTheme.labelMedium?.copyWith(color: color),
-            ),
+    final child = Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        ConstrainedBox(
+          constraints: BoxConstraints(maxWidth: compact ? 150 : 190),
+          child: Text(
+            label,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: theme.textTheme.labelMedium?.copyWith(color: color),
           ),
-          if (trailingIcon != null) ...[
-            const SizedBox(width: 2),
-            Icon(trailingIcon, size: 14, color: color),
-          ],
+        ),
+        if (trailingIcon != null) ...[
+          const SizedBox(width: 2),
+          Icon(trailingIcon, size: 14, color: color),
         ],
+      ],
+    );
+    if (!compact) {
+      return ConstrainedBox(
+        constraints: const BoxConstraints(minHeight: 22),
+        child: child,
+      );
+    }
+    return DecoratedBox(
+      decoration: BoxDecoration(
+        color: mutedPanelBackgroundColor(theme),
+        borderRadius: BorderRadius.circular(999),
+        border: Border.all(color: borderColor(theme)),
+      ),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+        child: child,
       ),
     );
   }
@@ -3111,10 +3196,15 @@ class _StatusPill extends StatelessWidget {
 }
 
 class _SurfaceSection extends StatelessWidget {
-  const _SurfaceSection({required this.child, this.workspaceStyle = false});
+  const _SurfaceSection({
+    required this.child,
+    this.workspaceStyle = false,
+    this.compact = false,
+  });
 
   final Widget child;
   final bool workspaceStyle;
+  final bool compact;
 
   @override
   Widget build(BuildContext context) {
@@ -3125,12 +3215,12 @@ class _SurfaceSection extends StatelessWidget {
             ? mutedPanelBackgroundColor(theme)
             : panelBackgroundColor(theme),
         borderRadius: BorderRadius.circular(
-          workspaceStyle ? 20 : panelRadius(theme),
+          workspaceStyle ? 20 : (compact ? 18 : panelRadius(theme)),
         ),
         border: Border.all(color: borderColor(theme)),
       ),
       child: Padding(
-        padding: EdgeInsets.all(workspaceStyle ? 12 : 20),
+        padding: EdgeInsets.all(workspaceStyle || compact ? 12 : 20),
         child: child,
       ),
     );

@@ -24,7 +24,12 @@ class ComposerAttachmentBridge {
       return const [];
     }
 
-    final response = await _channel.invokeMethod<List<Object?>>(method);
+    final List<Object?>? response;
+    try {
+      response = await _channel.invokeMethod<List<Object?>>(method);
+    } on MissingPluginException {
+      return const [];
+    }
     return asJsonList(response)
         .map(asJsonMap)
         .map(CodexInputPart.fromPlatformMap)
