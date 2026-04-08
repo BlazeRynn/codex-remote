@@ -580,6 +580,33 @@ void main() {
     expect(find.text('bold'), findsOneWidget);
     expect(find.text('item'), findsOneWidget);
   });
+
+  testWidgets('renders completed fenced code blocks without fence markers', (
+    tester,
+  ) async {
+    final item = CodexThreadItem(
+      id: 'assistant-completed-code-fence',
+      type: 'agent.message',
+      title: 'Assistant',
+      body:
+          '可以用这个：\n\n```text\nImprove mobile composer layout and guard attachment bridge fallback\n```',
+      status: 'completed',
+      actor: 'assistant',
+      raw: const {'phase': 'final_answer'},
+    );
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(body: ConversationMessageBody(item: item)),
+      ),
+    );
+    await tester.pump();
+
+    expect(tester.takeException(), isNull);
+    expect(find.textContaining('Improve mobile composer layout'), findsOneWidget);
+    expect(find.text('```text'), findsNothing);
+    expect(find.text('```'), findsNothing);
+  });
 }
 
 const List<int> _transparentPng = <int>[

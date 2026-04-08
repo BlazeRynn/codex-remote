@@ -352,12 +352,149 @@ class _MarkdownTextBody extends StatelessWidget {
             ),
       );
     }
+    final fencedSegments = _parseFencedCodeSegments(trimmed);
+    if (fencedSegments != null) {
+      return _SegmentedMarkdownBody(
+        segments: fencedSegments,
+        workspaceStyle: workspaceStyle,
+        fallbackStyle: fallbackStyle,
+      );
+    }
     return _SafeMarkdownBody(
       data: trimmed,
       workspaceStyle: workspaceStyle,
       fallbackStyle: fallbackStyle,
     );
   }
+}
+
+class _SegmentedMarkdownBody extends StatelessWidget {
+  const _SegmentedMarkdownBody({
+    required this.segments,
+    required this.workspaceStyle,
+    this.fallbackStyle,
+  });
+
+  final List<_FencedCodeSegment> segments;
+  final bool workspaceStyle;
+  final TextStyle? fallbackStyle;
+
+  @override
+  Widget build(BuildContext context) {
+    final children = <Widget>[];
+    for (final segment in segments) {
+      if (segment.isCode) {
+        children.add(
+          _CodeSurface(
+            code: segment.content,
+            language: segment.language,
+            workspaceStyle: workspaceStyle,
+          ),
+        );
+        continue;
+      }
+      if (segment.content.trim().isEmpty) {
+        continue;
+      }
+      children.add(
+        _SafeMarkdownBody(
+          data: segment.content,
+          workspaceStyle: workspaceStyle,
+          fallbackStyle: fallbackStyle,
+        ),
+      );
+    }
+    if (children.isEmpty) {
+      return const SizedBox.shrink();
+    }
+    if (children.length == 1) {
+      return children.single;
+    }
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        for (var index = 0; index < children.length; index += 1) ...[
+          if (index > 0) SizedBox(height: workspaceStyle ? 8 : 10),
+          children[index],
+        ],
+      ],
+    );
+  }
+}
+
+class _FencedCodeSegment {
+  const _FencedCodeSegment.text(this.content) : language = null, isCode = false;
+
+  const _FencedCodeSegment.code(this.content, {this.language}) : isCode = true;
+
+  final String content;
+  final String? language;
+  final bool isCode;
+}
+
+List<_FencedCodeSegment>? _parseFencedCodeSegments(String value) {
+  final normalized = value.trimRight();
+  if (!normalized.contains('```')) {
+    return null;
+  }
+
+  final lines = const LineSplitter().convert(normalized);
+  final segments = <_FencedCodeSegment>[];
+  final textBuffer = <String>[];
+  final codeBuffer = <String>[];
+  String? activeLanguage;
+  var insideFence = false;
+  var sawFence = false;
+
+  void flushText() {
+    if (textBuffer.isEmpty) {
+      return;
+    }
+    segments.add(_FencedCodeSegment.text(textBuffer.join('\n')));
+    textBuffer.clear();
+  }
+
+  void flushCode() {
+    segments.add(
+      _FencedCodeSegment.code(
+        codeBuffer.join('\n'),
+        language: activeLanguage,
+      ),
+    );
+    codeBuffer.clear();
+    activeLanguage = null;
+  }
+
+  for (final line in lines) {
+    final trimmedLeft = line.trimLeft();
+    if (trimmedLeft.startsWith('```')) {
+      final fenceMarker = trimmedLeft.substring(3).trim();
+      if (!insideFence) {
+        sawFence = true;
+        flushText();
+        activeLanguage = fenceMarker.isEmpty ? null : fenceMarker;
+        insideFence = true;
+      } else {
+        flushCode();
+        insideFence = false;
+      }
+      continue;
+    }
+
+    if (insideFence) {
+      codeBuffer.add(line);
+    } else {
+      textBuffer.add(line);
+    }
+  }
+
+  if (!sawFence || insideFence) {
+    return null;
+  }
+
+  flushText();
+  return segments.isEmpty ? null : segments;
 }
 
 class _MessageAttachmentView extends StatelessWidget {
