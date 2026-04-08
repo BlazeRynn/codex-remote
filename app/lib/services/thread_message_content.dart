@@ -49,7 +49,7 @@ String renderUserMessageContent(Object? value) {
 UserMessagePart? _parseUserInputPart(Map<String, dynamic> item) {
   switch (readString(item, const ['type'])) {
     case 'text':
-      final text = readString(item, const ['text']);
+      final text = _normalizeUserText(readString(item, const ['text']));
       return text.isEmpty
           ? null
           : UserMessagePart(type: UserMessagePartType.text, text: text);
@@ -91,6 +91,26 @@ UserMessagePart? _parseUserInputPart(Map<String, dynamic> item) {
           ? null
           : UserMessagePart(type: UserMessagePartType.other, text: text);
   }
+}
+
+String _normalizeUserText(String value) {
+  final text = value.trim();
+  if (text.isEmpty) {
+    return '';
+  }
+  const ideContextHeader = 'Context from my IDE setup:';
+  const requestMarker = 'My request for Codex:';
+  if (!text.startsWith(ideContextHeader)) {
+    return text;
+  }
+
+  final markerIndex = text.indexOf(requestMarker);
+  if (markerIndex < 0) {
+    return text;
+  }
+
+  final requestText = text.substring(markerIndex + requestMarker.length).trim();
+  return requestText.isEmpty ? text : requestText;
 }
 
 String _renderMentionText({required String name, required String path}) {

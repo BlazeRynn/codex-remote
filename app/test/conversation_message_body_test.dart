@@ -107,6 +107,40 @@ void main() {
     expect(find.text(r'E:\workspace\codex-control\spec.txt'), findsOneWidget);
   });
 
+  testWidgets('strips IDE context wrapper from structured user text', (
+    tester,
+  ) async {
+    final item = CodexThreadItem(
+      id: 'user-ide-context-1',
+      type: 'user.message',
+      title: 'User message',
+      body: '继续',
+      status: 'completed',
+      actor: 'user',
+      raw: {
+        'content': [
+          {
+            'type': 'text',
+            'text':
+                'Context from my IDE setup:\n\nActive file: app/lib/screens/thread_detail_screen.dart\n\nOpen tabs:\n- thread_detail_screen.dart: app/lib/screens/thread_detail_screen.dart\n- composer_attachment_bridge.dart: app/lib/services/composer_attachment_bridge.dart\n\nMy request for Codex:\n继续',
+          },
+        ],
+      },
+    );
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(body: ConversationMessageBody(item: item)),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.text('继续'), findsOneWidget);
+    expect(find.text('Context from my IDE setup:'), findsNothing);
+    expect(find.textContaining('Active file:'), findsNothing);
+    expect(find.text('My request for Codex:'), findsNothing);
+  });
+
   testWidgets('renders assistant gif items as previewable images', (
     tester,
   ) async {
