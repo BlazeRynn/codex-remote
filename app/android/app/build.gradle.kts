@@ -1,9 +1,13 @@
+import java.util.Locale
+
 plugins {
     id("com.android.application")
     id("kotlin-android")
     // The Flutter Gradle Plugin must be applied after the Android and Kotlin Gradle plugins.
     id("dev.flutter.flutter-gradle-plugin")
 }
+
+val apkBaseName = "Codex Remote"
 
 android {
     namespace = "com.example.mobile"
@@ -36,6 +40,47 @@ android {
             // Signing with the debug keys for now, so `flutter run --release` works.
             signingConfig = signingConfigs.getByName("debug")
         }
+    }
+}
+
+@Suppress("DEPRECATION")
+android.applicationVariants.all {
+    val flavorSuffix =
+        if (flavorName.isNullOrBlank()) {
+            ""
+        } else {
+            "-${flavorName.lowercase(Locale.ROOT)}"
+        }
+    val variantSuffix = "$flavorSuffix-${buildType.name}"
+    val customApkName = "$apkBaseName$variantSuffix.apk"
+    val flutterApkName = "app$variantSuffix.apk"
+    val apkOutputSubdirectory =
+        if (flavorName.isNullOrBlank()) {
+            buildType.name
+        } else {
+            "${flavorName}/${buildType.name}"
+        }
+    val assembleTaskName = "assemble${name.replaceFirstChar { it.titlecase(Locale.ROOT) }}"
+    val copyTaskName = "copy${name.replaceFirstChar { it.titlecase(Locale.ROOT) }}ApkWithProductName"
+
+    val copyNamedApkTask =
+        tasks.register(copyTaskName) {
+            doLast {
+                copy {
+                    from(layout.buildDirectory.file("outputs/flutter-apk/$flutterApkName"))
+                    into(layout.buildDirectory.dir("outputs/flutter-apk"))
+                    rename { customApkName }
+                }
+                copy {
+                    from(layout.buildDirectory.file("outputs/apk/$apkOutputSubdirectory/$flutterApkName"))
+                    into(layout.buildDirectory.dir("outputs/apk/$apkOutputSubdirectory"))
+                    rename { customApkName }
+                }
+            }
+        }
+
+    tasks.named(assembleTaskName) {
+        finalizedBy(copyNamedApkTask)
     }
 }
 

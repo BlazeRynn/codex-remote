@@ -2,9 +2,11 @@
 cmake_minimum_required(VERSION 3.14)
 project(codex_remote LANGUAGES CXX)
 
-# The name of the executable created for the application. Change this to change
-# the on-disk name of your application.
+# The logical name of the executable target. Keep this stable for the Flutter
+# toolchain integration.
 set(BINARY_NAME "codex_remote")
+# The on-disk name of the built executable.
+set(APPLICATION_NAME "Codex Remote")
 
 # Explicitly opt in to modern CMake behaviors to avoid warnings with recent
 # versions of CMake.
@@ -51,6 +53,9 @@ add_subdirectory(${FLUTTER_MANAGED_DIR})
 
 # Application build; see runner/CMakeLists.txt.
 add_subdirectory("runner")
+set_target_properties(${BINARY_NAME} PROPERTIES
+  OUTPUT_NAME "${APPLICATION_NAME}"
+)
 
 
 # Generated plugin build rules, which manage building the plugins and adding

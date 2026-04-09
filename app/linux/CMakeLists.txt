@@ -2,9 +2,11 @@
 cmake_minimum_required(VERSION 3.13)
 project(runner LANGUAGES CXX)
 
-# The name of the executable created for the application. Change this to change
-# the on-disk name of your application.
+# The logical name of the executable target. Keep this stable for the Flutter
+# toolchain integration.
 set(BINARY_NAME "mobile")
+# The on-disk name of the built executable.
+set(APPLICATION_NAME "Codex Remote")
 # The unique GTK application identifier for this application. See:
 # https://wiki.gnome.org/HowDoI/ChooseApplicationID
 set(APPLICATION_ID "com.example.mobile")
@@ -66,6 +68,7 @@ add_dependencies(${BINARY_NAME} flutter_assemble)
 # the default top-level location.
 set_target_properties(${BINARY_NAME}
   PROPERTIES
+  OUTPUT_NAME "${APPLICATION_NAME}"
   RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/intermediates_do_not_run"
 )
 
