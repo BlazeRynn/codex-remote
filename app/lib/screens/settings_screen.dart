@@ -25,22 +25,18 @@ class BridgeSettingsScreen extends StatefulWidget {
 class _BridgeSettingsScreenState extends State<BridgeSettingsScreen> {
   final _formKey = GlobalKey<FormState>();
   late final TextEditingController _baseUrlController;
-  late BridgeDataSourceMode _mode;
 
   bool _saving = false;
 
   @override
   void initState() {
     super.initState();
-    final initialAppServerConfig =
-        widget.initialConfig.mode == BridgeDataSourceMode.bridge &&
-            widget.initialConfig.baseUrl.trim().isEmpty
+    final initialAppServerConfig = widget.initialConfig.baseUrl.trim().isEmpty
         ? BridgeConfig.localDefault(authToken: widget.initialConfig.authToken)
         : widget.initialConfig;
     _baseUrlController = TextEditingController(
       text: initialAppServerConfig.baseUrl,
     );
-    _mode = initialAppServerConfig.mode;
   }
 
   @override
@@ -58,7 +54,6 @@ class _BridgeSettingsScreenState extends State<BridgeSettingsScreen> {
       baseUrl: _baseUrlController.text.trim(),
       authToken: '',
       eventsPath: BridgeConfig.defaultEventsPath,
-      mode: _mode,
     );
 
     setState(() {
@@ -89,10 +84,6 @@ class _BridgeSettingsScreenState extends State<BridgeSettingsScreen> {
 
   String? _validateBaseUrl(String? value) {
     final strings = context.strings;
-    if (_mode == BridgeDataSourceMode.demo) {
-      return null;
-    }
-
     final trimmed = (value ?? '').trim();
     if (trimmed.isEmpty) {
       return strings.text('Base URL is required.', '必须填写基础 URL。');
@@ -126,8 +117,7 @@ class _BridgeSettingsScreenState extends State<BridgeSettingsScreen> {
   @override
   Widget build(BuildContext context) {
     final strings = context.strings;
-    final serverFieldsEnabled =
-        !_saving && _mode == BridgeDataSourceMode.bridge;
+    final serverFieldsEnabled = !_saving;
     final themePreference = widget.preferencesController.themePreference;
     final languagePreference = widget.preferencesController.languagePreference;
 
@@ -141,33 +131,10 @@ class _BridgeSettingsScreenState extends State<BridgeSettingsScreen> {
             children: [
               Text(
                 strings.text(
-                  'Choose a data source. Direct mode connects to your local Codex app-server and defaults to the local machine, while demo mode loads a local sample workspace.',
-                  '选择数据来源。直连模式连接本机 Codex app-server，默认指向本机；Demo 模式会加载本地示例工作区。',
+                  'Connect the app to your local Codex app-server. The local proxy mirror is preferred when available.',
+                  '将应用连接到本地 Codex app-server。可用时优先使用本地 proxy mirror。',
                 ),
                 style: Theme.of(context).textTheme.bodyLarge,
-              ),
-              const SizedBox(height: 20),
-              SegmentedButton<BridgeDataSourceMode>(
-                segments: [
-                  ButtonSegment(
-                    value: BridgeDataSourceMode.bridge,
-                    label: Text(strings.text('Direct', '直连')),
-                    icon: Icon(Icons.lan_outlined),
-                  ),
-                  ButtonSegment(
-                    value: BridgeDataSourceMode.demo,
-                    label: Text(strings.text('Demo', '演示')),
-                    icon: Icon(Icons.science_outlined),
-                  ),
-                ],
-                selected: {_mode},
-                onSelectionChanged: _saving
-                    ? null
-                    : (selection) {
-                        setState(() {
-                          _mode = selection.first;
-                        });
-                      },
               ),
               const SizedBox(height: 16),
               Text(
@@ -238,25 +205,6 @@ class _BridgeSettingsScreenState extends State<BridgeSettingsScreen> {
                       },
               ),
               const SizedBox(height: 16),
-              if (_mode == BridgeDataSourceMode.demo)
-                Container(
-                  padding: const EdgeInsets.all(14),
-                  decoration: BoxDecoration(
-                    color: Theme.of(context).colorScheme.surface,
-                    borderRadius: BorderRadius.circular(18),
-                    border: Border.all(
-                      color: Colors.black.withValues(alpha: 0.06),
-                    ),
-                  ),
-                  child: Text(
-                    strings.text(
-                      'Demo mode uses built-in sample sessions and a synthetic live event stream so you can test the UI without a running app-server.',
-                      'Demo 模式使用内置示例会话和模拟实时事件流，这样即使没有运行中的 app-server 也能测试界面。',
-                    ),
-                  ),
-                ),
-              if (_mode == BridgeDataSourceMode.demo)
-                const SizedBox(height: 16),
               TextFormField(
                 controller: _baseUrlController,
                 decoration: InputDecoration(
@@ -285,7 +233,7 @@ class _BridgeSettingsScreenState extends State<BridgeSettingsScreen> {
               TextButton(
                 onPressed: _saving ? null : _resetToLocalAppServer,
                 child: Text(
-                  strings.text('Reset to local app-server', '重置为本机 app-server'),
+                  strings.text('Reset to local app-server', '重置为本地 app-server'),
                 ),
               ),
             ],

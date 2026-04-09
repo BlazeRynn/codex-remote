@@ -66,7 +66,6 @@ chmod +x proxy/codex-proxy
 ### Included
 
 - App-server URL configuration
-- Selectable `direct` and `demo` data sources
 - Thread list screen
 - Thread detail screen
 - Basic operation timeline rendering
@@ -152,6 +151,5 @@ flutter run -d linux
 The current app stores runtime settings in-app, including:
 
 - App-server URL
-- Data source mode (`direct` or `demo`)
 
 No build-time flavor setup is required for local development.

@@ -19,27 +19,14 @@ class SharedPrefsBridgeConfigStore implements BridgeConfigStore {
   static const _baseUrlKey = 'bridge.base_url';
   static const _authTokenKey = 'bridge.auth_token';
   static const _eventsPathKey = 'bridge.events_path';
-  static const _modeKey = 'bridge.mode';
   final EndpointProbe _endpointProbe;
 
   @override
   Future<BridgeConfig> load() async {
     final prefs = await SharedPreferences.getInstance();
-    final mode = _parseMode(prefs.getString(_modeKey));
     final savedBaseUrl = prefs.getString(_baseUrlKey)?.trim() ?? '';
     final savedAuthToken = prefs.getString(_authTokenKey) ?? '';
     final savedEventsPath = prefs.getString(_eventsPathKey)?.trim() ?? '';
-
-    if (mode == BridgeDataSourceMode.demo) {
-      return BridgeConfig(
-        baseUrl: savedBaseUrl,
-        authToken: savedAuthToken,
-        eventsPath: savedEventsPath.isEmpty
-            ? BridgeConfig.defaultEventsPath
-            : savedEventsPath,
-        mode: mode,
-      );
-    }
 
     final resolvedBaseUrl = await _resolveBaseUrl(savedBaseUrl);
 
@@ -49,7 +36,6 @@ class SharedPrefsBridgeConfigStore implements BridgeConfigStore {
       eventsPath: savedEventsPath.isEmpty
           ? BridgeConfig.defaultEventsPath
           : savedEventsPath,
-      mode: mode,
     );
   }
 
@@ -59,14 +45,6 @@ class SharedPrefsBridgeConfigStore implements BridgeConfigStore {
     await prefs.setString(_baseUrlKey, config.baseUrl.trim());
     await prefs.setString(_authTokenKey, config.authToken.trim());
     await prefs.setString(_eventsPathKey, config.eventsPath.trim());
-    await prefs.setString(_modeKey, config.mode.name);
-  }
-
-  BridgeDataSourceMode _parseMode(String? value) {
-    return switch (value) {
-      'demo' => BridgeDataSourceMode.demo,
-      _ => BridgeDataSourceMode.bridge,
-    };
   }
 
   Future<String> _resolveBaseUrl(String savedBaseUrl) async {

@@ -28,7 +28,7 @@ import '../services/ui_debug_logger.dart';
 import '../utils/json_utils.dart';
 import '../widgets/thread_message_list.dart';
 
-class ThreadDetailScreen extends StatelessWidget {
+class ThreadDetailScreen extends StatefulWidget {
   const ThreadDetailScreen({
     super.key,
     required this.config,
@@ -43,15 +43,35 @@ class ThreadDetailScreen extends StatelessWidget {
   final String? activeThreadId;
 
   @override
+  State<ThreadDetailScreen> createState() => _ThreadDetailScreenState();
+}
+
+class _ThreadDetailScreenState extends State<ThreadDetailScreen> {
+  final GlobalKey<_ThreadDetailPaneState> _paneKey =
+      GlobalKey<_ThreadDetailPaneState>();
+
+  @override
   Widget build(BuildContext context) {
+    final strings = context.strings;
     return Scaffold(
-      appBar: AppBar(title: Text(thread.title)),
+      appBar: AppBar(
+        title: Text(widget.thread.title),
+        actions: [
+          IconButton(
+            onPressed: () {
+              unawaited(_paneKey.currentState?.refresh() ?? Future.value());
+            },
+            tooltip: strings.text('Refresh', 'Refresh'),
+            icon: const Icon(Icons.sync),
+          ),
+        ],
+      ),
       body: ThreadDetailPane(
-        key: ValueKey('${config.baseUrl}:${thread.id}'),
-        config: config,
-        thread: thread,
-        selectedThreadId: selectedThreadId ?? thread.id,
-        activeThreadId: activeThreadId,
+        key: _paneKey,
+        config: widget.config,
+        thread: widget.thread,
+        selectedThreadId: widget.selectedThreadId ?? widget.thread.id,
+        activeThreadId: widget.activeThreadId,
       ),
     );
   }
@@ -125,6 +145,8 @@ class _ThreadDetailPaneState extends State<ThreadDetailPane>
 
   @override
   bool get wantKeepAlive => true;
+
+  Future<void> refresh() => _reloadAll();
 
   @override
   void initState() {
@@ -1462,18 +1484,6 @@ class _ThreadDetailPaneState extends State<ThreadDetailPane>
       color: panelBackgroundColor(theme),
       child: Column(
         children: [
-          Padding(
-            padding: padding,
-            child: _WorkspaceHeaderPanel(
-              thread: _bundle.thread,
-              liveConnectionState: _liveConnectionState,
-              pendingCount: _runtime.pendingRequests.length,
-              activeTurnId: _runtime.activeTurnId,
-              onRefresh: _reloadAll,
-              workspaceStyle: widget.workspaceStyle,
-              compact: compactLayout,
-            ),
-          ),
           if (_controlError != null)
             Padding(
               padding: EdgeInsets.fromLTRB(
@@ -1604,6 +1614,7 @@ typedef PendingRequestResponder =
       Object? content,
     });
 
+// ignore: unused_element
 class _WorkspaceHeaderPanel extends StatelessWidget {
   const _WorkspaceHeaderPanel({
     required this.thread,
@@ -1611,8 +1622,8 @@ class _WorkspaceHeaderPanel extends StatelessWidget {
     required this.pendingCount,
     required this.activeTurnId,
     required this.onRefresh,
-    this.workspaceStyle = false,
-    this.compact = false,
+    required this.workspaceStyle,
+    required this.compact,
   });
 
   final CodexThreadSummary thread;

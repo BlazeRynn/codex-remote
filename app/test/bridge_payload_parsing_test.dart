@@ -111,7 +111,7 @@ void main() {
   );
 
   test(
-    'SharedPrefsBridgeConfigStore defaults bridge mode to the local machine',
+    'SharedPrefsBridgeConfigStore defaults to the local machine',
     () async {
       SharedPreferences.setMockInitialValues({});
       final store = SharedPrefsBridgeConfigStore(
@@ -121,7 +121,6 @@ void main() {
 
       final config = await store.load();
 
-      expect(config.mode, BridgeDataSourceMode.bridge);
       expect(config.baseUrl, BridgeConfig.defaultMirrorBaseUrl());
       expect(config.eventsPath, BridgeConfig.defaultEventsPath);
       expect(config.isConfigured, isTrue);

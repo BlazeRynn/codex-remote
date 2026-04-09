@@ -3,6 +3,7 @@ import 'dart:async';
 import '../models/bridge_config.dart';
 import '../models/bridge_health.dart';
 import '../models/codex_composer_mode.dart';
+import '../models/codex_directory_entry.dart';
 import '../models/codex_input_part.dart';
 import '../models/codex_model_option.dart';
 import '../models/codex_thread_bundle.dart';
@@ -10,7 +11,6 @@ import '../models/codex_thread_runtime.dart';
 import '../models/codex_thread_summary.dart';
 import '../services/bridge_realtime_client.dart';
 import 'app_server_rpc_client.dart';
-import 'demo_codex_repository.dart';
 
 abstract class CodexRealtimeSession {
   Stream<BridgeRealtimeEvent> get stream;
@@ -28,6 +28,12 @@ abstract class CodexRepository {
   Future<List<CodexModelOption>> listModels();
 
   Future<CodexThreadRuntime> getThreadRuntime(String threadId);
+
+  Future<String?> getDefaultWorkspacePath();
+
+  Future<List<CodexDirectoryEntry>> listWorkspaceRoots();
+
+  Future<List<CodexDirectoryEntry>> listWorkspaceDirectories(String path);
 
   Future<CodexThreadBundle> createThread({
     required List<CodexInputPart> input,
@@ -61,10 +67,6 @@ abstract class CodexRepository {
 }
 
 CodexRepository createCodexRepository(BridgeConfig config) {
-  if (config.usesDemoData) {
-    return DemoCodexRepository(config);
-  }
-
   return AppServerCodexRepository(config);
 }
 
@@ -92,6 +94,21 @@ class AppServerCodexRepository implements CodexRepository {
   @override
   Future<CodexThreadRuntime> getThreadRuntime(String threadId) {
     return _client.getThreadRuntime(threadId);
+  }
+
+  @override
+  Future<String?> getDefaultWorkspacePath() {
+    return _client.getDefaultWorkspacePath();
+  }
+
+  @override
+  Future<List<CodexDirectoryEntry>> listWorkspaceRoots() {
+    return _client.listWorkspaceRoots();
+  }
+
+  @override
+  Future<List<CodexDirectoryEntry>> listWorkspaceDirectories(String path) {
+    return _client.listWorkspaceDirectories(path);
   }
 
   @override

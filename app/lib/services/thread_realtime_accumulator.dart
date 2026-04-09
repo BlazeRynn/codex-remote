@@ -726,7 +726,7 @@ String _readItemBody(Map<String, dynamic> item) {
       if (contentBody.trim().isNotEmpty) {
         return contentBody;
       }
-      return readString(item, const ['text', 'message'], fallback: '');
+      return renderUserMessageContent(item);
     case 'agentMessage':
     case 'plan':
       return readString(item, const ['text']);

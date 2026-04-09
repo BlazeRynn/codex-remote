@@ -1,13 +1,10 @@
 import 'dart:io';
 
-enum BridgeDataSourceMode { bridge, demo }
-
 class BridgeConfig {
   const BridgeConfig({
     required this.baseUrl,
     required this.authToken,
     this.eventsPath = '/events',
-    this.mode = BridgeDataSourceMode.bridge,
   });
 
   static const empty = BridgeConfig(baseUrl: '', authToken: '');
@@ -24,7 +21,6 @@ class BridgeConfig {
   final String baseUrl;
   final String authToken;
   final String eventsPath;
-  final BridgeDataSourceMode mode;
 
   static String defaultBridgeBaseUrl() {
     return defaultDirectBaseUrl();
@@ -67,9 +63,7 @@ class BridgeConfig {
     );
   }
 
-  bool get usesDemoData => mode == BridgeDataSourceMode.demo;
-
-  bool get isConfigured => usesDemoData || baseUrl.trim().isNotEmpty;
+  bool get isConfigured => baseUrl.trim().isNotEmpty;
 
   Map<String, String> get headers {
     final token = authToken.trim();
@@ -84,13 +78,11 @@ class BridgeConfig {
     String? baseUrl,
     String? authToken,
     String? eventsPath,
-    BridgeDataSourceMode? mode,
   }) {
     return BridgeConfig(
       baseUrl: baseUrl ?? this.baseUrl,
       authToken: authToken ?? this.authToken,
       eventsPath: eventsPath ?? this.eventsPath,
-      mode: mode ?? this.mode,
     );
   }
 
@@ -137,7 +129,6 @@ class BridgeConfig {
       'baseUrl': baseUrl,
       'authToken': authToken,
       'eventsPath': eventsPath,
-      'mode': mode.name,
     };
   }
 
@@ -146,15 +137,7 @@ class BridgeConfig {
       baseUrl: (json['baseUrl'] as String?) ?? '',
       authToken: (json['authToken'] as String?) ?? '',
       eventsPath: (json['eventsPath'] as String?) ?? '/events',
-      mode: _parseMode(json['mode'] as String?),
     );
-  }
-
-  static BridgeDataSourceMode _parseMode(String? value) {
-    return switch (value) {
-      'demo' => BridgeDataSourceMode.demo,
-      _ => BridgeDataSourceMode.bridge,
-    };
   }
 
   static String _normalizeBaseUrl(String value) {

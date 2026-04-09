@@ -337,6 +337,12 @@ class _ProxyRuntime {
     }
 
     if (_isClientRequest(decoded)) {
+      final intercepted = await _interceptClientRequest(decoded);
+      if (intercepted != null) {
+        await _writePrimary(jsonEncode(intercepted));
+        return;
+      }
+
       final method = decoded['method']?.toString() ?? '';
       final id = decoded['id'];
       _pendingClientRequests[_idKey(id)] = _PendingClientRequest(
@@ -413,6 +419,12 @@ class _ProxyRuntime {
     }
 
     if (_isClientRequest(decoded)) {
+      final intercepted = await _interceptClientRequest(decoded);
+      if (intercepted != null) {
+        await client.sendJson(intercepted);
+        return;
+      }
+
       final originalId = decoded['id'];
       final childId = 'ws:${client.id}:${_nextWsRequestOrdinal++}';
       _pendingClientRequests[_idKey(childId)] = _PendingClientRequest(
@@ -449,6 +461,49 @@ class _ProxyRuntime {
       'result': _cachedInitializeResult,
     });
     settings.log('mirror_client.initialize_served', {'clientId': client.id});
+  }
+
+  Future<Map<String, Object?>?> _interceptClientRequest(
+    Map<String, Object?> request,
+  ) async {
+    final method = request['method']?.toString();
+    if (method == null) {
+      return null;
+    }
+
+    try {
+      switch (method) {
+        case 'workspace/listRoots':
+          return {
+            'jsonrpc': request['jsonrpc'] ?? '2.0',
+            'id': request['id'],
+            'result': {'data': _listWorkspaceRoots()},
+          };
+        case 'workspace/listDirectory':
+          final params = switch (request['params']) {
+            Map<String, Object?> value => value,
+            Map value => value.cast<String, Object?>(),
+            _ => const <String, Object?>{},
+          };
+          final path = params['path']?.toString().trim() ?? '';
+          if (path.isEmpty) {
+            return _jsonRpcError(
+              id: request['id'],
+              message: 'workspace/listDirectory requires a path.',
+            );
+          }
+          final entries = await _listWorkspaceDirectories(path);
+          return {
+            'jsonrpc': request['jsonrpc'] ?? '2.0',
+            'id': request['id'],
+            'result': {'data': entries},
+          };
+      }
+    } on FileSystemException catch (error) {
+      return _jsonRpcError(id: request['id'], message: error.message);
+    }
+
+    return null;
   }
 
   Future<void> _handleChildLine(String line) async {
@@ -767,6 +822,91 @@ String _joinPath(String directory, String fileName) {
     return '$directory$fileName';
   }
   return '$directory${Platform.pathSeparator}$fileName';
+}
+
+List<Map<String, Object?>> _listWorkspaceRoots() {
+  if (Platform.isWindows) {
+    final roots = <Map<String, Object?>>[];
+    for (final codeUnit in 'ABCDEFGHIJKLMNOPQRSTUVWXYZ'.codeUnits) {
+      final letter = String.fromCharCode(codeUnit);
+      final path = '$letter:\\';
+      if (_directoryExistsSafe(path)) {
+        roots.add({'path': path, 'label': path});
+      }
+    }
+    return roots;
+  }
+
+  final roots = <Map<String, Object?>>[];
+
+  void addIfExists(String path, {String? label}) {
+    if (_directoryExistsSafe(path)) {
+      roots.add({'path': path, 'label': label ?? path});
+    }
+  }
+
+  addIfExists('/', label: '/');
+  final home = Platform.environment['HOME'];
+  if (home != null && home.trim().isNotEmpty) {
+    addIfExists(home, label: _directoryTreeLabel(home));
+  }
+  if (Platform.isAndroid) {
+    addIfExists('/storage/emulated/0', label: 'Internal storage');
+    addIfExists('/sdcard', label: 'sdcard');
+  }
+  return roots;
+}
+
+Future<List<Map<String, Object?>>> _listWorkspaceDirectories(String path) async {
+  final directory = Directory(path);
+  if (!await directory.exists()) {
+    return const <Map<String, Object?>>[];
+  }
+
+  final entries = <Map<String, Object?>>[];
+  await for (final entity in directory.list(followLinks: false)) {
+    if (entity is! Directory) {
+      continue;
+    }
+    final childPath = entity.path;
+    final label = _basename(childPath);
+    if (label.isEmpty || label.startsWith('.')) {
+      continue;
+    }
+    entries.add({'path': childPath, 'label': label});
+  }
+
+  entries.sort(
+    (left, right) => (left['label'] as String).toLowerCase().compareTo(
+      (right['label'] as String).toLowerCase(),
+    ),
+  );
+  return entries;
+}
+
+bool _directoryExistsSafe(String path) {
+  try {
+    return Directory(path).existsSync();
+  } on FileSystemException {
+    return false;
+  }
+}
+
+String _directoryTreeLabel(String path) {
+  final name = _basename(path);
+  return name.isEmpty ? path : name;
+}
+
+String _basename(String path) {
+  var normalized = path.replaceAll('\\', '/');
+  while (normalized.length > 1 && normalized.endsWith('/')) {
+    normalized = normalized.substring(0, normalized.length - 1);
+  }
+  final index = normalized.lastIndexOf('/');
+  if (index < 0) {
+    return normalized;
+  }
+  return normalized.substring(index + 1);
 }
 
 String? _normalizePath(String value) {

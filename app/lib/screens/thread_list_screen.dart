@@ -1,4 +1,4 @@
-import 'dart:async';
+﻿import 'dart:async';
 
 import 'package:flutter/material.dart';
 
@@ -7,6 +7,7 @@ import '../app/workspace_theme.dart';
 import '../models/bridge_config.dart';
 import '../models/bridge_health.dart';
 import '../models/codex_composer_mode.dart';
+import '../models/codex_directory_entry.dart';
 import '../models/codex_input_part.dart';
 import '../models/codex_model_option.dart';
 import '../models/codex_thread_summary.dart';
@@ -478,7 +479,12 @@ class _ThreadListScreenState extends State<ThreadListScreen> {
 
       final draft = await showDialog<_CreateThreadDraft>(
         context: context,
-        builder: (_) => _CreateThreadDialog(models: models),
+        builder: (_) => _CreateThreadDialog(
+          models: models,
+          listWorkspaceRoots: repository.listWorkspaceRoots,
+          listWorkspaceDirectories: repository.listWorkspaceDirectories,
+          getDefaultWorkspacePath: repository.getDefaultWorkspacePath,
+        ),
       );
       if (draft == null || !mounted) {
         return;
@@ -661,9 +667,7 @@ class _ThreadListScreenState extends State<ThreadListScreen> {
   Widget build(BuildContext context) {
     final projection = _projectThreads();
     final strings = context.strings;
-    final host = _config.usesDemoData
-        ? strings.text('demo workspace', '演示工作区')
-        : Uri.tryParse(_config.baseUrl)?.host;
+    final host = Uri.tryParse(_config.baseUrl)?.host;
     final desktopWorkspace = useDesktopWorkspaceShell(context);
     final showDesktopShell =
         desktopWorkspace && MediaQuery.sizeOf(context).width >= 1180;
@@ -693,7 +697,12 @@ class _ThreadListScreenState extends State<ThreadListScreen> {
       appBar: showDesktopShell
           ? null
           : AppBar(
-              title: Text(strings.text('Codex Control', 'Codex 控制台')),
+              title: _ConnectionAppBarTitle(
+                currentProvider: currentProvider,
+                configured: _config.isConfigured,
+                health: _health,
+                loading: _loading,
+              ),
               actions: [
                 IconButton(
                   onPressed: _config.isConfigured
@@ -816,13 +825,6 @@ class _ThreadListScreenState extends State<ThreadListScreen> {
               child: ListView(
                 padding: const EdgeInsets.all(16),
                 children: [
-                  _BridgeHero(
-                    configured: _config.isConfigured,
-                    host: host,
-                    health: _health,
-                    onConfigure: _openSettings,
-                  ),
-                  const SizedBox(height: 16),
                   if (_error != null)
                     _MessagePanel(
                       title: strings.text(
@@ -1259,6 +1261,149 @@ class _WindowsSidebarHeader extends StatelessWidget {
   }
 }
 
+enum _ConnectionIndicatorState { connected, disconnected, connecting }
+
+class _ConnectionAppBarTitle extends StatelessWidget {
+  const _ConnectionAppBarTitle({
+    required this.currentProvider,
+    required this.configured,
+    required this.health,
+    required this.loading,
+  });
+
+  final String? currentProvider;
+  final bool configured;
+  final BridgeHealth health;
+  final bool loading;
+
+  @override
+  Widget build(BuildContext context) {
+    final title = _providerLabel(context, currentProvider);
+    final indicatorState = _connectionIndicatorState(
+      configured: configured,
+      health: health,
+      loading: loading,
+    );
+
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        _ConnectionStatusDot(state: indicatorState),
+        const SizedBox(width: 8),
+        Flexible(
+          child: Text(
+            title,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+class _ConnectionStatusDot extends StatefulWidget {
+  const _ConnectionStatusDot({required this.state});
+
+  final _ConnectionIndicatorState state;
+
+  @override
+  State<_ConnectionStatusDot> createState() => _ConnectionStatusDotState();
+}
+
+class _ConnectionStatusDotState extends State<_ConnectionStatusDot>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _controller;
+
+  @override
+  void initState() {
+    super.initState();
+    _controller = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 700),
+    );
+    _syncAnimation();
+  }
+
+  @override
+  void didUpdateWidget(covariant _ConnectionStatusDot oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.state != widget.state) {
+      _syncAnimation();
+    }
+  }
+
+  void _syncAnimation() {
+    if (widget.state == _ConnectionIndicatorState.connecting) {
+      _controller.repeat(reverse: true);
+    } else {
+      _controller
+        ..stop()
+        ..value = 1;
+    }
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final color = switch (widget.state) {
+      _ConnectionIndicatorState.connected => const Color(0xFF16A34A),
+      _ConnectionIndicatorState.disconnected => const Color(0xFF9CA3AF),
+      _ConnectionIndicatorState.connecting => const Color(0xFFDC2626),
+    };
+
+    if (widget.state != _ConnectionIndicatorState.connecting) {
+      return _Dot(color: color, opacity: 1);
+    }
+
+    return FadeTransition(
+      opacity: Tween<double>(begin: 0.25, end: 1).animate(_controller),
+      child: _Dot(color: color, opacity: 1),
+    );
+  }
+}
+
+class _Dot extends StatelessWidget {
+  const _Dot({required this.color, required this.opacity});
+
+  final Color color;
+  final double opacity;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      width: 10,
+      height: 10,
+      decoration: BoxDecoration(
+        color: color.withValues(alpha: opacity),
+        shape: BoxShape.circle,
+      ),
+    );
+  }
+}
+
+_ConnectionIndicatorState _connectionIndicatorState({
+  required bool configured,
+  required BridgeHealth health,
+  required bool loading,
+}) {
+  if (!configured) {
+    return _ConnectionIndicatorState.disconnected;
+  }
+  if (loading) {
+    return _ConnectionIndicatorState.connecting;
+  }
+  if (health.reachable) {
+    return _ConnectionIndicatorState.connected;
+  }
+  return _ConnectionIndicatorState.disconnected;
+}
+
 class _WindowsHeaderAction extends StatelessWidget {
   const _WindowsHeaderAction({
     required this.child,
@@ -1663,6 +1808,7 @@ class _DesktopWorkspace extends StatelessWidget {
   }
 }
 
+// ignore: unused_element
 class _BridgeHero extends StatelessWidget {
   const _BridgeHero({
     required this.configured,
@@ -1937,7 +2083,13 @@ class _ThreadListItem extends StatelessWidget {
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final accent = theme.colorScheme.primary;
-    final strings = context.strings;
+    final metadata = <String>[
+      if (thread.cwd != null) workspaceLabelForDisplay(context, thread.cwd),
+      if (thread.updatedAt != null) _formatRelative(context, thread.updatedAt),
+      'ID ${shortThreadId(thread.id)}',
+      if (thread.itemCount != null)
+        context.strings.text('${thread.itemCount} items', '${thread.itemCount} 项'),
+    ];
 
     return Material(
       color: Colors.transparent,
@@ -1945,7 +2097,7 @@ class _ThreadListItem extends StatelessWidget {
         onTap: onTap,
         borderRadius: BorderRadius.circular(panelRadius(theme) - 6),
         child: Container(
-          padding: const EdgeInsets.all(16),
+          padding: const EdgeInsets.fromLTRB(14, 12, 10, 12),
           decoration: BoxDecoration(
             color: selected
                 ? selectionFillColor(theme)
@@ -1966,68 +2118,46 @@ class _ThreadListItem extends StatelessWidget {
                   Expanded(
                     child: Text(
                       thread.title,
-                      style: Theme.of(context).textTheme.titleMedium,
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                      style: theme.textTheme.titleSmall?.copyWith(
+                        fontWeight: FontWeight.w600,
+                        height: 1.2,
+                      ),
                     ),
                   ),
-                  const SizedBox(width: 12),
+                  const SizedBox(width: 10),
                   _ThreadPill(
                     label: _humanize(context, thread.status),
                     status: thread.status,
+                    compact: true,
                   ),
                   const SizedBox(width: 2),
                   _ThreadArchiveButton(
                     archived: archived,
                     onPressed: onToggleArchived,
+                    compact: true,
                   ),
                 ],
               ),
-              const SizedBox(height: 8),
+              const SizedBox(height: 6),
               Text(
                 _threadCardSubtitle(thread),
-                maxLines: 2,
+                maxLines: 1,
                 overflow: TextOverflow.ellipsis,
-                style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                style: theme.textTheme.bodySmall?.copyWith(
                   color: secondaryTextColor(theme),
+                  height: 1.3,
                 ),
               ),
-              const SizedBox(height: 12),
-              Wrap(
-                spacing: 12,
-                runSpacing: 8,
-                children: [
-                  if (thread.cwd != null)
-                    Text(
-                      '${strings.text('Workspace', '工作区')} '
-                      '${workspaceLabelForDisplay(context, thread.cwd)}',
-                      style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                        color: secondaryTextColor(theme),
-                      ),
-                    ),
-                  if (thread.updatedAt != null)
-                    Text(
-                      '${strings.text('Updated', '更新于')} '
-                      '${_formatRelative(context, thread.updatedAt)}',
-                      style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                        color: secondaryTextColor(theme),
-                      ),
-                    ),
-                  Text(
-                    'ID ${shortThreadId(thread.id)}',
-                    style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                      color: secondaryTextColor(theme),
-                    ),
-                  ),
-                  if (thread.itemCount != null)
-                    Text(
-                      strings.text(
-                        '${thread.itemCount} items',
-                        '${thread.itemCount} 项',
-                      ),
-                      style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                        color: secondaryTextColor(theme),
-                      ),
-                    ),
-                ],
+              const SizedBox(height: 10),
+              Text(
+                metadata.join('  ·  '),
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: theme.textTheme.bodySmall?.copyWith(
+                  color: secondaryTextColor(theme),
+                ),
               ),
             ],
           ),
@@ -2247,9 +2377,18 @@ class _CreateThreadDraft {
 }
 
 class _CreateThreadDialog extends StatefulWidget {
-  const _CreateThreadDialog({required this.models});
+  const _CreateThreadDialog({
+    required this.models,
+    required this.listWorkspaceRoots,
+    required this.listWorkspaceDirectories,
+    required this.getDefaultWorkspacePath,
+  });
 
   final List<CodexModelOption> models;
+  final Future<List<CodexDirectoryEntry>> Function() listWorkspaceRoots;
+  final Future<List<CodexDirectoryEntry>> Function(String path)
+  listWorkspaceDirectories;
+  final Future<String?> Function() getDefaultWorkspacePath;
 
   @override
   State<_CreateThreadDialog> createState() => _CreateThreadDialogState();
@@ -2257,16 +2396,27 @@ class _CreateThreadDialog extends StatefulWidget {
 
 class _CreateThreadDialogState extends State<_CreateThreadDialog> {
   late final TextEditingController _messageController;
-  late final TextEditingController _cwdController;
   late CodexComposerMode _mode;
   String? _selectedModelId;
+  String? _selectedCwd;
+  String? _defaultWorkspacePath;
+  bool _defaultWorkspaceLoading = true;
+  List<_DirectoryTreeRoot> _roots = const <_DirectoryTreeRoot>[];
+  bool _rootsLoading = true;
+  String? _rootsError;
+  final Set<String> _expandedPaths = <String>{};
+  final Set<String> _loadingPaths = <String>{};
+  final Map<String, List<_DirectoryTreeEntry>> _childrenByPath =
+      <String, List<_DirectoryTreeEntry>>{};
+  final Map<String, String> _errorsByPath = <String, String>{};
 
   @override
   void initState() {
     super.initState();
     _messageController = TextEditingController();
-    _cwdController = TextEditingController();
     _mode = CodexComposerMode.agent;
+    unawaited(_loadDefaultWorkspacePath());
+    unawaited(_loadRoots());
     for (final model in widget.models) {
       if (model.isDefault) {
         _selectedModelId = model.id;
@@ -2281,13 +2431,271 @@ class _CreateThreadDialogState extends State<_CreateThreadDialog> {
   @override
   void dispose() {
     _messageController.dispose();
-    _cwdController.dispose();
     super.dispose();
+  }
+
+  Future<void> _loadRoots() async {
+    setState(() {
+      _rootsLoading = true;
+      _rootsError = null;
+    });
+    try {
+      final entries = await widget.listWorkspaceRoots();
+      if (!mounted) {
+        return;
+      }
+      setState(() {
+        _roots = entries
+            .map(
+              (entry) => _DirectoryTreeRoot(
+                path: entry.path,
+                label: entry.label,
+              ),
+            )
+            .toList(growable: false);
+      });
+    } catch (_) {
+      if (!mounted) {
+        return;
+      }
+      setState(() {
+        _rootsError = 'unreadable';
+      });
+    } finally {
+      if (mounted) {
+        setState(() {
+          _rootsLoading = false;
+        });
+      }
+    }
+  }
+
+  Future<void> _loadDefaultWorkspacePath() async {
+    setState(() {
+      _defaultWorkspaceLoading = true;
+    });
+    try {
+      final path = await widget.getDefaultWorkspacePath();
+      if (!mounted) {
+        return;
+      }
+      setState(() {
+        _defaultWorkspacePath = path?.trim().isEmpty ?? true ? null : path;
+      });
+    } catch (_) {
+      if (!mounted) {
+        return;
+      }
+      setState(() {
+        _defaultWorkspacePath = null;
+      });
+    } finally {
+      if (mounted) {
+        setState(() {
+          _defaultWorkspaceLoading = false;
+        });
+      }
+    }
+  }
+
+  Future<void> _toggleNode(String path) async {
+    if (_expandedPaths.contains(path)) {
+      setState(() {
+        _expandedPaths.remove(path);
+      });
+      return;
+    }
+
+    setState(() {
+      _expandedPaths.add(path);
+    });
+
+    if (_childrenByPath.containsKey(path) || _loadingPaths.contains(path)) {
+      return;
+    }
+
+    await _loadChildren(path);
+  }
+
+  Future<void> _loadChildren(String path) async {
+    setState(() {
+      _loadingPaths.add(path);
+      _errorsByPath.remove(path);
+    });
+
+    try {
+      final entries = await widget.listWorkspaceDirectories(path);
+      if (!mounted) {
+        return;
+      }
+      setState(() {
+        _childrenByPath[path] = entries
+            .map(
+              (entry) => _DirectoryTreeEntry(
+                path: entry.path,
+                name: entry.label,
+              ),
+            )
+            .toList(growable: false);
+      });
+    } catch (_) {
+      if (!mounted) {
+        return;
+      }
+      setState(() {
+        _errorsByPath[path] = 'unreadable';
+      });
+    } finally {
+      if (mounted) {
+        setState(() {
+          _loadingPaths.remove(path);
+        });
+      }
+    }
+  }
+
+  Widget _buildTreeNode(
+    BuildContext context, {
+    required String path,
+    required String label,
+    required int depth,
+  }) {
+    final theme = Theme.of(context);
+    final strings = context.strings;
+    final expanded = _expandedPaths.contains(path);
+    final loading = _loadingPaths.contains(path);
+    final selected = _selectedCwd == path;
+    final children = _childrenByPath[path];
+    final hasLoadedChildren = children != null;
+    final error = _errorsByPath[path];
+    final canExpand =
+        loading || error != null || (children?.isNotEmpty ?? !hasLoadedChildren);
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Material(
+          color: selected
+              ? theme.colorScheme.primaryContainer.withValues(alpha: 0.55)
+              : Colors.transparent,
+          borderRadius: BorderRadius.circular(12),
+          child: InkWell(
+            borderRadius: BorderRadius.circular(12),
+            onTap: () {
+              setState(() {
+                _selectedCwd = path;
+              });
+            },
+            child: Padding(
+              padding: EdgeInsetsDirectional.only(
+                start: depth * 14.0,
+                end: 10,
+                top: 8,
+                bottom: 8,
+              ),
+              child: Row(
+                children: [
+                  SizedBox(
+                    width: 24,
+                    child: canExpand
+                        ? IconButton(
+                            padding: EdgeInsets.zero,
+                            constraints: const BoxConstraints.tightFor(
+                              width: 24,
+                              height: 24,
+                            ),
+                            splashRadius: 16,
+                            onPressed: () {
+                              unawaited(_toggleNode(path));
+                            },
+                            icon: loading
+                                ? const SizedBox(
+                                    width: 14,
+                                    height: 14,
+                                    child: CircularProgressIndicator(
+                                      strokeWidth: 2,
+                                    ),
+                                  )
+                                : Icon(
+                                    expanded
+                                        ? Icons.keyboard_arrow_down
+                                        : Icons.keyboard_arrow_right,
+                                    size: 18,
+                                  ),
+                          )
+                        : const SizedBox.shrink(),
+                  ),
+                  Icon(
+                    selected ? Icons.folder_open : Icons.folder_outlined,
+                    size: 18,
+                    color: selected
+                        ? theme.colorScheme.primary
+                        : theme.colorScheme.onSurfaceVariant,
+                  ),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Text(
+                      label,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: theme.textTheme.bodyMedium?.copyWith(
+                        color: selected
+                            ? theme.colorScheme.onSurface
+                            : theme.colorScheme.onSurfaceVariant,
+                        fontWeight: selected ? FontWeight.w700 : FontWeight.w500,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ),
+        if (expanded && error != null)
+          Padding(
+            padding: EdgeInsetsDirectional.only(
+              start: depth * 14.0 + 32,
+              top: 2,
+              bottom: 6,
+            ),
+            child: Text(
+              strings.text('Unable to read this folder', '无法读取这个目录'),
+              style: theme.textTheme.bodySmall?.copyWith(
+                color: theme.colorScheme.error,
+              ),
+            ),
+          ),
+        if (expanded && children != null && children.isEmpty && error == null)
+          Padding(
+            padding: EdgeInsetsDirectional.only(
+              start: depth * 14.0 + 32,
+              top: 2,
+              bottom: 6,
+            ),
+            child: Text(
+              strings.text('No subfolders', '没有子目录'),
+              style: theme.textTheme.bodySmall?.copyWith(
+                color: theme.colorScheme.onSurfaceVariant,
+              ),
+            ),
+          ),
+        if (expanded && children != null && children.isNotEmpty)
+          ...children.map(
+            (child) => _buildTreeNode(
+              context,
+              path: child.path,
+              label: child.name,
+              depth: depth + 1,
+            ),
+          ),
+      ],
+    );
   }
 
   @override
   Widget build(BuildContext context) {
     final strings = context.strings;
+    final theme = Theme.of(context);
     return AlertDialog(
       title: Text(strings.text('New Session', '新建会话')),
       content: SizedBox(
@@ -2352,14 +2760,123 @@ class _CreateThreadDialogState extends State<_CreateThreadDialog> {
                 },
               ),
               const SizedBox(height: 14),
-              TextField(
-                controller: _cwdController,
-                decoration: InputDecoration(
-                  labelText: strings.text('Working Directory', '工作目录'),
-                  hintText: strings.text(
-                    'Optional project path override',
-                    '可选项目路径覆盖',
-                  ),
+              Text(
+                strings.text('Workspace', '工作区'),
+                style: theme.textTheme.titleSmall?.copyWith(
+                  fontWeight: FontWeight.w700,
+                ),
+              ),
+              const SizedBox(height: 8),
+              Container(
+                decoration: BoxDecoration(
+                  color: theme.colorScheme.surfaceContainerLowest,
+                  borderRadius: BorderRadius.circular(16),
+                  border: Border.all(color: theme.colorScheme.outlineVariant),
+                ),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    ListTile(
+                      dense: true,
+                      contentPadding: const EdgeInsets.symmetric(horizontal: 12),
+                      leading: Icon(
+                        _selectedCwd == null
+                            ? Icons.radio_button_checked
+                            : Icons.radio_button_off,
+                        size: 20,
+                        color: _selectedCwd == null
+                            ? theme.colorScheme.primary
+                            : theme.colorScheme.onSurfaceVariant,
+                      ),
+                      title: Text(
+                        strings.text(
+                          'Use provider default workspace',
+                          '使用 provider 默认工作区',
+                        ),
+                      ),
+                      onTap: () {
+                        setState(() {
+                          _selectedCwd = null;
+                        });
+                      },
+                    ),
+                    Padding(
+                      padding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
+                      child: Text(
+                        _defaultWorkspaceLoading
+                            ? strings.text(
+                                'Loading default workspace...',
+                                '正在读取默认工作区...',
+                              )
+                            : (_defaultWorkspacePath ??
+                                  strings.text(
+                                    'No default workspace provided',
+                                    '未提供默认工作区路径',
+                                  )),
+                        style: theme.textTheme.bodySmall?.copyWith(
+                          color: theme.colorScheme.onSurfaceVariant,
+                        ),
+                      ),
+                    ),
+                    if (_selectedCwd != null)
+                      Padding(
+                        padding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
+                        child: Text(
+                          _selectedCwd!,
+                          style: theme.textTheme.bodySmall?.copyWith(
+                            color: theme.colorScheme.onSurfaceVariant,
+                          ),
+                        ),
+                      ),
+                    const Divider(height: 1),
+                    Padding(
+                      padding: const EdgeInsets.fromLTRB(16, 12, 16, 8),
+                      child: Text(
+                        strings.text(
+                          'Choose from the directory tree',
+                          '从目录树选择',
+                        ),
+                        style: theme.textTheme.labelLarge?.copyWith(
+                          fontWeight: FontWeight.w700,
+                        ),
+                      ),
+                    ),
+                    ConstrainedBox(
+                      constraints: const BoxConstraints(maxHeight: 320),
+                      child: _rootsLoading
+                          ? const Center(
+                              child: Padding(
+                                padding: EdgeInsets.all(20),
+                                child: CircularProgressIndicator(),
+                              ),
+                            )
+                          : _rootsError != null
+                          ? Center(
+                              child: Padding(
+                                padding: const EdgeInsets.all(16),
+                                child: Text(
+                                  strings.text(
+                                    'Unable to load workspaces',
+                                    '无法加载工作区',
+                                  ),
+                                ),
+                              ),
+                            )
+                          : ListView(
+                              shrinkWrap: true,
+                              children: _roots
+                                  .map(
+                                    (root) => _buildTreeNode(
+                                      context,
+                                      path: root.path,
+                                      label: root.label,
+                                      depth: 0,
+                                    ),
+                                  )
+                                  .toList(growable: false),
+                            ),
+                    ),
+                  ],
                 ),
               ),
             ],
@@ -2384,9 +2901,7 @@ class _CreateThreadDialogState extends State<_CreateThreadDialog> {
                 message: message,
                 mode: _mode,
                 modelId: _selectedModelId,
-                cwd: _cwdController.text.trim().isEmpty
-                    ? null
-                    : _cwdController.text.trim(),
+                cwd: _selectedCwd,
               ),
             );
           },
@@ -2397,18 +2912,46 @@ class _CreateThreadDialogState extends State<_CreateThreadDialog> {
   }
 }
 
+class _DirectoryTreeRoot {
+  const _DirectoryTreeRoot({
+    required this.path,
+    required this.label,
+  });
+
+  final String path;
+  final String label;
+}
+
+class _DirectoryTreeEntry {
+  const _DirectoryTreeEntry({
+    required this.path,
+    required this.name,
+  });
+
+  final String path;
+  final String name;
+}
+
 class _ThreadPill extends StatelessWidget {
-  const _ThreadPill({required this.label, required this.status});
+  const _ThreadPill({
+    required this.label,
+    required this.status,
+    this.compact = false,
+  });
 
   final String label;
   final String status;
+  final bool compact;
 
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final style = _threadPillStyle(theme, status);
     return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+      padding: EdgeInsets.symmetric(
+        horizontal: compact ? 8 : 10,
+        vertical: compact ? 4 : 6,
+      ),
       decoration: BoxDecoration(
         color: style.backgroundColor,
         borderRadius: BorderRadius.circular(999),
@@ -2416,10 +2959,12 @@ class _ThreadPill extends StatelessWidget {
       ),
       child: Text(
         label,
-        style: theme.textTheme.labelMedium?.copyWith(
-          color: style.foregroundColor,
-          fontWeight: FontWeight.w700,
-        ),
+        style:
+            (compact ? theme.textTheme.labelSmall : theme.textTheme.labelMedium)
+                ?.copyWith(
+                  color: style.foregroundColor,
+                  fontWeight: FontWeight.w700,
+                ),
       ),
     );
   }

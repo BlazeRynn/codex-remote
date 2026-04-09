@@ -5,6 +5,7 @@ import 'dart:io';
 import '../models/bridge_config.dart';
 import '../models/bridge_health.dart';
 import '../models/codex_composer_mode.dart';
+import '../models/codex_directory_entry.dart';
 import '../models/codex_input_part.dart';
 import '../models/codex_model_option.dart';
 import '../models/codex_pending_request.dart';
@@ -27,7 +28,7 @@ class AppServerRpcClient {
   static final Map<String, AppServerRpcClient> _sharedClients = {};
 
   static AppServerRpcClient shared(BridgeConfig config) {
-    final key = '${config.mode.name}:${config.resolveRpcUri()}';
+    final key = config.resolveRpcUri().toString();
     return _sharedClients.putIfAbsent(
       key,
       () => AppServerRpcClient._(config, sharedKey: key),
@@ -198,6 +199,62 @@ class AppServerRpcClient {
           ),
         )
         .toList(growable: false);
+  }
+
+  Future<List<CodexDirectoryEntry>> listWorkspaceRoots() async {
+    await ensureConnected();
+    final response = await _request<Map<String, dynamic>>(
+      'workspace/listRoots',
+      const <String, dynamic>{},
+    );
+    return asJsonList(response['data'])
+        .map(asJsonMap)
+        .map(
+          (item) => CodexDirectoryEntry(
+            path: readString(item, const ['path']),
+            label: readString(item, const ['label', 'name']),
+          ),
+        )
+        .where((entry) => entry.path.trim().isNotEmpty)
+        .toList(growable: false);
+  }
+
+  Future<List<CodexDirectoryEntry>> listWorkspaceDirectories(String path) async {
+    await ensureConnected();
+    final response = await _request<Map<String, dynamic>>(
+      'workspace/listDirectory',
+      {'path': path},
+    );
+    return asJsonList(response['data'])
+        .map(asJsonMap)
+        .map(
+          (item) => CodexDirectoryEntry(
+            path: readString(item, const ['path']),
+            label: readString(item, const ['label', 'name']),
+          ),
+        )
+        .where((entry) => entry.path.trim().isNotEmpty)
+        .toList(growable: false);
+  }
+
+  Future<String?> getDefaultWorkspacePath() async {
+    await ensureConnected();
+    try {
+      final response = await _request<Map<String, dynamic>>('config/read', {
+        'includeLayers': false,
+      });
+      final config = asJsonMap(response['config']);
+      final cwd = readString(
+        config,
+        const ['cwd', 'workingDirectory', 'working_directory', 'workspacePath'],
+      ).trim();
+      if (cwd.isEmpty) {
+        return null;
+      }
+      return _normalizeCwd(cwd);
+    } catch (_) {
+      return null;
+    }
   }
 
   Future<CodexThreadBundle> createThread({
@@ -939,11 +996,14 @@ class AppServerRpcClient {
 
     switch (rawType) {
       case 'userMessage':
+        final userBody = renderUserMessageContent(item['content']).trim().isNotEmpty
+            ? renderUserMessageContent(item['content'])
+            : renderUserMessageContent(item);
         return CodexThreadItem(
           id: readString(item, const ['id']),
           type: type,
           title: 'User message',
-          body: renderUserMessageContent(item['content']),
+          body: userBody,
           status: readString(turn, const ['status'], fallback: 'unknown'),
           actor: 'user',
           createdAt: createdAt,
@@ -2266,7 +2326,7 @@ String _readUserPromptText(Map<String, dynamic> item) {
   if (content.trim().isNotEmpty) {
     return content;
   }
-  return readString(item, const ['text', 'message', 'content']);
+  return renderUserMessageContent(item);
 }
 
 String? _sanitizeTitleCandidate(String? value) {

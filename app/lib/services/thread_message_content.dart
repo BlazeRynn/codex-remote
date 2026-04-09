@@ -36,14 +36,30 @@ List<UserMessagePart> parseUserMessageParts(Object? value) {
 
 String renderUserMessageContent(Object? value) {
   final parts = parseUserMessageParts(value);
-  if (parts.isEmpty) {
-    return '';
+  if (parts.isNotEmpty) {
+    return parts
+        .map((part) => part.text)
+        .where((part) => part.trim().isNotEmpty)
+        .join('\n');
   }
 
-  return parts
-      .map((part) => part.text)
-      .where((part) => part.trim().isNotEmpty)
-      .join('\n');
+  if (value is Map<String, dynamic>) {
+    return _normalizeUserText(
+      readString(value, const ['text', 'message', 'content']),
+    );
+  }
+  if (value is Map) {
+    return _normalizeUserText(
+      readString(
+        value.cast<String, dynamic>(),
+        const ['text', 'message', 'content'],
+      ),
+    );
+  }
+  if (value is String) {
+    return _normalizeUserText(value);
+  }
+  return '';
 }
 
 UserMessagePart? _parseUserInputPart(Map<String, dynamic> item) {
@@ -86,7 +102,9 @@ UserMessagePart? _parseUserInputPart(Map<String, dynamic> item) {
         path: path.isEmpty ? null : path,
       );
     default:
-      final text = readString(item, const ['text', 'message', 'content']);
+      final text = _normalizeUserText(
+        readString(item, const ['text', 'message', 'content']),
+      );
       return text.isEmpty
           ? null
           : UserMessagePart(type: UserMessagePartType.other, text: text);
