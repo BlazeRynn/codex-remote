@@ -75,6 +75,20 @@ class WorkspaceThreadGroup {
   final List<CodexThreadSummary> threads;
 }
 
+class WorkspaceQuickSelection {
+  const WorkspaceQuickSelection({
+    required this.cwd,
+    required this.threadCount,
+    required this.hasActiveThread,
+    required this.latestActivityAt,
+  });
+
+  final String cwd;
+  final int threadCount;
+  final bool hasActiveThread;
+  final DateTime? latestActivityAt;
+}
+
 String workspaceGroupKey(String? value) {
   return normalizeWorkspacePath(value) ?? '\u0000unknown-workspace';
 }
@@ -245,6 +259,68 @@ List<WorkspaceThreadGroup> workspaceThreadGroups(
   return List.unmodifiable(groups);
 }
 
+List<WorkspaceQuickSelection> workspaceQuickSelections(
+  List<CodexThreadSummary> threads,
+) {
+  final grouped = <String, WorkspaceQuickSelection>{};
+  for (final thread in threads) {
+    final cwd = normalizeWorkspacePath(thread.cwd);
+    if (cwd == null) {
+      continue;
+    }
+
+    final latestActivityAt = _laterTimestamp(
+      thread.updatedAt,
+      thread.createdAt,
+    );
+    final current = grouped[cwd];
+    if (current == null) {
+      grouped[cwd] = WorkspaceQuickSelection(
+        cwd: cwd,
+        threadCount: 1,
+        hasActiveThread: thread.status == 'active',
+        latestActivityAt: latestActivityAt,
+      );
+      continue;
+    }
+
+    grouped[cwd] = WorkspaceQuickSelection(
+      cwd: cwd,
+      threadCount: current.threadCount + 1,
+      hasActiveThread: current.hasActiveThread || thread.status == 'active',
+      latestActivityAt: _laterTimestamp(
+        current.latestActivityAt,
+        latestActivityAt,
+      ),
+    );
+  }
+
+  final selections = grouped.values.toList(growable: false);
+  selections.sort((left, right) {
+    if (left.hasActiveThread != right.hasActiveThread) {
+      return left.hasActiveThread ? -1 : 1;
+    }
+
+    final leftActivity = left.latestActivityAt?.millisecondsSinceEpoch ?? -1;
+    final rightActivity = right.latestActivityAt?.millisecondsSinceEpoch ?? -1;
+    if (leftActivity != rightActivity) {
+      return rightActivity.compareTo(leftActivity);
+    }
+
+    final labelComparison = _workspaceSortLabel(
+      left.cwd,
+    ).compareTo(_workspaceSortLabel(right.cwd));
+    if (labelComparison != 0) {
+      return labelComparison;
+    }
+
+    return _workspaceSortPath(
+      left.cwd,
+    ).compareTo(_workspaceSortPath(right.cwd));
+  });
+  return List.unmodifiable(selections);
+}
+
 bool threadSummaryListsEquivalent(
   List<CodexThreadSummary> left,
   List<CodexThreadSummary> right,
@@ -378,4 +454,14 @@ bool _sameTimestamp(DateTime? left, DateTime? right) {
     return false;
   }
   return left.isAtSameMomentAs(right);
+}
+
+DateTime? _laterTimestamp(DateTime? left, DateTime? right) {
+  if (left == null) {
+    return right;
+  }
+  if (right == null) {
+    return left;
+  }
+  return left.isAfter(right) ? left : right;
 }

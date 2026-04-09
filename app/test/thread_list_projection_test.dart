@@ -134,12 +134,58 @@ void main() {
     expect(workspaceGroupKey(r'\\?\C:\alpha'), r'C:\alpha');
     expect(workspaceGroupKey(null), workspaceGroupKey(''));
   });
+
+  test(
+    'workspaceQuickSelections deduplicates normalized workspaces and sorts by relevance',
+    () {
+      final selections = workspaceQuickSelections([
+        _thread(
+          id: 'alpha-1',
+          cwd: r'\\?\C:\alpha',
+          createdAt: DateTime.utc(2026, 4, 1),
+        ),
+        _thread(
+          id: 'gamma-1',
+          cwd: r'C:\gamma',
+          updatedAt: DateTime.utc(2026, 4, 4),
+        ),
+        _thread(
+          id: 'beta-1',
+          cwd: r'C:\beta',
+          status: 'active',
+          updatedAt: DateTime.utc(2026, 4, 2),
+        ),
+        _thread(
+          id: 'alpha-2',
+          cwd: r'C:\alpha',
+          updatedAt: DateTime.utc(2026, 4, 3),
+        ),
+        _thread(id: 'unknown', cwd: null),
+      ]);
+
+      expect(selections.map((selection) => selection.cwd), [
+        r'C:\beta',
+        r'C:\gamma',
+        r'C:\alpha',
+      ]);
+      expect(
+        selections.map((selection) => selection.threadCount),
+        orderedEquals([1, 1, 2]),
+      );
+      expect(
+        selections.map((selection) => selection.hasActiveThread),
+        orderedEquals([true, false, false]),
+      );
+      expect(selections.last.latestActivityAt, DateTime.utc(2026, 4, 3));
+    },
+  );
 }
 
 CodexThreadSummary _thread({
   required String id,
   String status = 'idle',
   DateTime? createdAt,
+  DateTime? updatedAt,
   String? cwd,
 }) {
   return CodexThreadSummary(
@@ -148,6 +194,7 @@ CodexThreadSummary _thread({
     status: status,
     preview: 'Preview $id',
     createdAt: createdAt,
+    updatedAt: updatedAt,
     cwd: cwd,
   );
 }

@@ -1,4 +1,4 @@
-﻿import 'dart:async';
+import 'dart:async';
 
 import 'package:flutter/material.dart';
 
@@ -477,10 +477,14 @@ class _ThreadListScreenState extends State<ThreadListScreen> {
         return;
       }
 
+      final existingWorkspaces = workspaceQuickSelections(
+        _projectThreads().scopedThreads,
+      );
       final draft = await showDialog<_CreateThreadDraft>(
         context: context,
         builder: (_) => _CreateThreadDialog(
           models: models,
+          existingWorkspaces: existingWorkspaces,
           listWorkspaceRoots: repository.listWorkspaceRoots,
           listWorkspaceDirectories: repository.listWorkspaceDirectories,
           getDefaultWorkspacePath: repository.getDefaultWorkspacePath,
@@ -1291,11 +1295,7 @@ class _ConnectionAppBarTitle extends StatelessWidget {
         _ConnectionStatusDot(state: indicatorState),
         const SizedBox(width: 8),
         Flexible(
-          child: Text(
-            title,
-            maxLines: 1,
-            overflow: TextOverflow.ellipsis,
-          ),
+          child: Text(title, maxLines: 1, overflow: TextOverflow.ellipsis),
         ),
       ],
     );
@@ -2088,7 +2088,10 @@ class _ThreadListItem extends StatelessWidget {
       if (thread.updatedAt != null) _formatRelative(context, thread.updatedAt),
       'ID ${shortThreadId(thread.id)}',
       if (thread.itemCount != null)
-        context.strings.text('${thread.itemCount} items', '${thread.itemCount} 项'),
+        context.strings.text(
+          '${thread.itemCount} items',
+          '${thread.itemCount} 项',
+        ),
     ];
 
     return Material(
@@ -2379,12 +2382,14 @@ class _CreateThreadDraft {
 class _CreateThreadDialog extends StatefulWidget {
   const _CreateThreadDialog({
     required this.models,
+    required this.existingWorkspaces,
     required this.listWorkspaceRoots,
     required this.listWorkspaceDirectories,
     required this.getDefaultWorkspacePath,
   });
 
   final List<CodexModelOption> models;
+  final List<WorkspaceQuickSelection> existingWorkspaces;
   final Future<List<CodexDirectoryEntry>> Function() listWorkspaceRoots;
   final Future<List<CodexDirectoryEntry>> Function(String path)
   listWorkspaceDirectories;
@@ -2447,10 +2452,8 @@ class _CreateThreadDialogState extends State<_CreateThreadDialog> {
       setState(() {
         _roots = entries
             .map(
-              (entry) => _DirectoryTreeRoot(
-                path: entry.path,
-                label: entry.label,
-              ),
+              (entry) =>
+                  _DirectoryTreeRoot(path: entry.path, label: entry.label),
             )
             .toList(growable: false);
       });
@@ -2498,6 +2501,16 @@ class _CreateThreadDialogState extends State<_CreateThreadDialog> {
     }
   }
 
+  void _updateSelectedCwd(String? path) {
+    setState(() {
+      _selectedCwd = normalizeWorkspacePath(path);
+    });
+  }
+
+  bool _isSelectedCwd(String? path) {
+    return _selectedCwd == normalizeWorkspacePath(path);
+  }
+
   Future<void> _toggleNode(String path) async {
     if (_expandedPaths.contains(path)) {
       setState(() {
@@ -2531,10 +2544,8 @@ class _CreateThreadDialogState extends State<_CreateThreadDialog> {
       setState(() {
         _childrenByPath[path] = entries
             .map(
-              (entry) => _DirectoryTreeEntry(
-                path: entry.path,
-                name: entry.label,
-              ),
+              (entry) =>
+                  _DirectoryTreeEntry(path: entry.path, name: entry.label),
             )
             .toList(growable: false);
       });
@@ -2564,12 +2575,14 @@ class _CreateThreadDialogState extends State<_CreateThreadDialog> {
     final strings = context.strings;
     final expanded = _expandedPaths.contains(path);
     final loading = _loadingPaths.contains(path);
-    final selected = _selectedCwd == path;
+    final selected = _isSelectedCwd(path);
     final children = _childrenByPath[path];
     final hasLoadedChildren = children != null;
     final error = _errorsByPath[path];
     final canExpand =
-        loading || error != null || (children?.isNotEmpty ?? !hasLoadedChildren);
+        loading ||
+        error != null ||
+        (children?.isNotEmpty ?? !hasLoadedChildren);
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -2581,11 +2594,7 @@ class _CreateThreadDialogState extends State<_CreateThreadDialog> {
           borderRadius: BorderRadius.circular(12),
           child: InkWell(
             borderRadius: BorderRadius.circular(12),
-            onTap: () {
-              setState(() {
-                _selectedCwd = path;
-              });
-            },
+            onTap: () => _updateSelectedCwd(path),
             child: Padding(
               padding: EdgeInsetsDirectional.only(
                 start: depth * 14.0,
@@ -2642,7 +2651,9 @@ class _CreateThreadDialogState extends State<_CreateThreadDialog> {
                         color: selected
                             ? theme.colorScheme.onSurface
                             : theme.colorScheme.onSurfaceVariant,
-                        fontWeight: selected ? FontWeight.w700 : FontWeight.w500,
+                        fontWeight: selected
+                            ? FontWeight.w700
+                            : FontWeight.w500,
                       ),
                     ),
                   ),
@@ -2692,10 +2703,90 @@ class _CreateThreadDialogState extends State<_CreateThreadDialog> {
     );
   }
 
+  Widget _buildExistingWorkspaceTile(
+    BuildContext context,
+    WorkspaceQuickSelection workspace,
+  ) {
+    final theme = Theme.of(context);
+    final strings = context.strings;
+    final selected = _isSelectedCwd(workspace.cwd);
+    final details = workspace.hasActiveThread
+        ? strings.text(
+            '${workspace.threadCount} sessions · active',
+            '${workspace.threadCount} 个会话 · 进行中',
+          )
+        : strings.text(
+            '${workspace.threadCount} sessions',
+            '${workspace.threadCount} 个会话',
+          );
+
+    return Material(
+      color: selected
+          ? theme.colorScheme.primaryContainer.withValues(alpha: 0.55)
+          : Colors.transparent,
+      borderRadius: BorderRadius.circular(12),
+      child: InkWell(
+        borderRadius: BorderRadius.circular(12),
+        onTap: () => _updateSelectedCwd(workspace.cwd),
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+          child: Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Icon(
+                selected ? Icons.radio_button_checked : Icons.radio_button_off,
+                size: 20,
+                color: selected
+                    ? theme.colorScheme.primary
+                    : theme.colorScheme.onSurfaceVariant,
+              ),
+              const SizedBox(width: 10),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      workspaceLabelForDisplay(context, workspace.cwd),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: theme.textTheme.bodyMedium?.copyWith(
+                        color: selected
+                            ? theme.colorScheme.onSurface
+                            : theme.colorScheme.onSurfaceVariant,
+                        fontWeight: FontWeight.w700,
+                      ),
+                    ),
+                    const SizedBox(height: 2),
+                    Text(
+                      details,
+                      style: theme.textTheme.bodySmall?.copyWith(
+                        color: theme.colorScheme.onSurfaceVariant,
+                      ),
+                    ),
+                    const SizedBox(height: 2),
+                    Text(
+                      workspace.cwd,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: theme.textTheme.bodySmall?.copyWith(
+                        color: theme.colorScheme.onSurfaceVariant,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final strings = context.strings;
     final theme = Theme.of(context);
+    final showExistingWorkspaces = widget.existingWorkspaces.isNotEmpty;
     return AlertDialog(
       title: Text(strings.text('New Session', '新建会话')),
       content: SizedBox(
@@ -2778,7 +2869,9 @@ class _CreateThreadDialogState extends State<_CreateThreadDialog> {
                   children: [
                     ListTile(
                       dense: true,
-                      contentPadding: const EdgeInsets.symmetric(horizontal: 12),
+                      contentPadding: const EdgeInsets.symmetric(
+                        horizontal: 12,
+                      ),
                       leading: Icon(
                         _selectedCwd == null
                             ? Icons.radio_button_checked
@@ -2794,11 +2887,7 @@ class _CreateThreadDialogState extends State<_CreateThreadDialog> {
                           '使用 provider 默认工作区',
                         ),
                       ),
-                      onTap: () {
-                        setState(() {
-                          _selectedCwd = null;
-                        });
-                      },
+                      onTap: () => _updateSelectedCwd(null),
                     ),
                     Padding(
                       padding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
@@ -2828,6 +2917,40 @@ class _CreateThreadDialogState extends State<_CreateThreadDialog> {
                           ),
                         ),
                       ),
+                    if (showExistingWorkspaces) ...[
+                      const Divider(height: 1),
+                      Padding(
+                        padding: const EdgeInsets.fromLTRB(16, 12, 16, 8),
+                        child: Text(
+                          strings.text(
+                            'Choose from existing workspaces',
+                            '从当前已有工作区选择',
+                          ),
+                          style: theme.textTheme.labelLarge?.copyWith(
+                            fontWeight: FontWeight.w700,
+                          ),
+                        ),
+                      ),
+                      ConstrainedBox(
+                        constraints: const BoxConstraints(maxHeight: 220),
+                        child: ListView.separated(
+                          shrinkWrap: true,
+                          itemCount: widget.existingWorkspaces.length,
+                          separatorBuilder: (_, _) => Divider(
+                            height: 1,
+                            indent: 42,
+                            endIndent: 12,
+                            color: theme.colorScheme.outlineVariant,
+                          ),
+                          itemBuilder: (context, index) {
+                            return _buildExistingWorkspaceTile(
+                              context,
+                              widget.existingWorkspaces[index],
+                            );
+                          },
+                        ),
+                      ),
+                    ],
                     const Divider(height: 1),
                     Padding(
                       padding: const EdgeInsets.fromLTRB(16, 12, 16, 8),
@@ -2913,20 +3036,14 @@ class _CreateThreadDialogState extends State<_CreateThreadDialog> {
 }
 
 class _DirectoryTreeRoot {
-  const _DirectoryTreeRoot({
-    required this.path,
-    required this.label,
-  });
+  const _DirectoryTreeRoot({required this.path, required this.label});
 
   final String path;
   final String label;
 }
 
 class _DirectoryTreeEntry {
-  const _DirectoryTreeEntry({
-    required this.path,
-    required this.name,
-  });
+  const _DirectoryTreeEntry({required this.path, required this.name});
 
   final String path;
   final String name;
