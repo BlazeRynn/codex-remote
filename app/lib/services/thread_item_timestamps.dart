@@ -30,5 +30,6 @@ DateTime? resolveThreadItemDisplayTimestamp(CodexThreadItem item) {
         'turnTimestamp',
         'turnCreatedAt',
         'turnUpdatedAt',
+        'threadCreatedAt',
       ]);
 }

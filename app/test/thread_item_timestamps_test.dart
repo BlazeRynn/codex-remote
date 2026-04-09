@@ -73,4 +73,41 @@ void main() {
       );
     },
   );
+
+  test(
+    'resolveThreadItemDisplayTimestamp falls back to raw thread timestamp',
+    () {
+      final item = CodexThreadItem(
+        id: 'agent-3',
+        type: 'agent.message',
+        title: 'Assistant message',
+        body: 'hello from restored history',
+        status: 'completed',
+        actor: 'assistant',
+        raw: const {'threadCreatedAt': '2026-04-05T05:43:21.000Z'},
+      );
+
+      expect(
+        resolveThreadItemDisplayTimestamp(item),
+        DateTime.parse('2026-04-05T05:43:21.000Z'),
+      );
+    },
+  );
+
+  test(
+    'resolveThreadItemDisplayTimestamp does not use thread updated time as message time',
+    () {
+      final item = CodexThreadItem(
+        id: 'agent-4',
+        type: 'agent.message',
+        title: 'Assistant message',
+        body: 'hello from active thread',
+        status: 'completed',
+        actor: 'assistant',
+        raw: const {'threadUpdatedAt': '2026-04-09T10:00:00.000Z'},
+      );
+
+      expect(resolveThreadItemDisplayTimestamp(item), isNull);
+    },
+  );
 }

@@ -53,6 +53,17 @@ class ConversationMessageBody extends StatelessWidget {
       return _ReasoningMessageBody(item: item, workspaceStyle: workspaceStyle);
     }
 
+    if (item.type == 'plan') {
+      final planState = _planStateFromItem(item);
+      if (planState != null) {
+        return _PlanMessageBody(
+          item: item,
+          planState: planState,
+          workspaceStyle: workspaceStyle,
+        );
+      }
+    }
+
     if (item.type == 'web.search') {
       return _WebSearchMessageBody(item: item, workspaceStyle: workspaceStyle);
     }
@@ -70,7 +81,9 @@ class ConversationMessageBody extends StatelessWidget {
       }
     }
 
-    final body = item.body.trimRight();
+    final body = item.type == 'user.message'
+        ? normalizeUserMessageText(item.body).trimRight()
+        : item.body.trimRight();
     if (body.isEmpty) {
       return const SizedBox.shrink();
     }
@@ -122,10 +135,11 @@ class _AssistantGroupBody extends StatelessWidget {
           _AssistantGroupItemBody(
             item: items[index],
             workspaceStyle: workspaceStyle,
-            showReasoningStatus:
-                items[index].type == 'reasoning' &&
-                !_hasLaterAssistantReply(items, index),
-            reserveReasoningStatusSpace: items[index].type == 'reasoning',
+            showReasoningStatus: items[index].type == 'reasoning',
+            reasoningActiveOverride: items[index].type == 'reasoning'
+                ? _isReasoningInProgress(items[index]) &&
+                      !_hasLaterAssistantReply(items, index)
+                : null,
           ),
         ],
       ],
@@ -138,13 +152,13 @@ class _AssistantGroupItemBody extends StatelessWidget {
     required this.item,
     required this.workspaceStyle,
     this.showReasoningStatus = true,
-    this.reserveReasoningStatusSpace = false,
+    this.reasoningActiveOverride,
   });
 
   final CodexThreadItem item;
   final bool workspaceStyle;
   final bool showReasoningStatus;
-  final bool reserveReasoningStatusSpace;
+  final bool? reasoningActiveOverride;
 
   @override
   Widget build(BuildContext context) {
@@ -171,7 +185,7 @@ class _AssistantGroupItemBody extends StatelessWidget {
         item: item,
         workspaceStyle: workspaceStyle,
         showStatus: showReasoningStatus,
-        reserveStatusSpace: reserveReasoningStatusSpace,
+        activeOverride: reasoningActiveOverride,
       );
     }
 
@@ -188,13 +202,13 @@ class _ReasoningMessageBody extends StatefulWidget {
     required this.item,
     required this.workspaceStyle,
     this.showStatus = true,
-    this.reserveStatusSpace = false,
+    this.activeOverride,
   });
 
   final CodexThreadItem item;
   final bool workspaceStyle;
   final bool showStatus;
-  final bool reserveStatusSpace;
+  final bool? activeOverride;
 
   @override
   State<_ReasoningMessageBody> createState() => _ReasoningMessageBodyState();
@@ -204,20 +218,20 @@ class _ReasoningMessageBodyState extends State<_ReasoningMessageBody> {
   @override
   Widget build(BuildContext context) {
     final body = widget.item.body.trimRight();
-    final active = _isReasoningInProgress(widget.item);
-    final showStatus = widget.showStatus && active;
-    final reserveStatusSpace = widget.reserveStatusSpace;
-    if (body.isEmpty && !showStatus && !reserveStatusSpace) {
+    final active = widget.activeOverride ?? _isReasoningInProgress(widget.item);
+    final showStatus = widget.showStatus;
+    if (body.isEmpty && !showStatus) {
       return const SizedBox.shrink();
     }
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        if (showStatus || reserveStatusSpace)
-          showStatus
-              ? _ReasoningStatusLine(workspaceStyle: widget.workspaceStyle)
-              : SizedBox(height: _reasoningStatusLineHeight(context)),
+        if (showStatus)
+          _ReasoningStatusLine(
+            workspaceStyle: widget.workspaceStyle,
+            active: active,
+          ),
         if (showStatus && body.isNotEmpty)
           SizedBox(height: widget.workspaceStyle ? 6 : 8),
         if (body.isNotEmpty)
@@ -228,20 +242,249 @@ class _ReasoningMessageBodyState extends State<_ReasoningMessageBody> {
 }
 
 class _ReasoningStatusLine extends StatelessWidget {
-  const _ReasoningStatusLine({required this.workspaceStyle});
+  const _ReasoningStatusLine({
+    required this.workspaceStyle,
+    required this.active,
+  });
 
+  final bool workspaceStyle;
+  final bool active;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final label = active
+        ? _localizedText(context, 'Thinking', '正在思考')
+        : _localizedText(context, 'Thought complete', '思考完成');
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Text(
+          label,
+          style: theme.textTheme.labelMedium?.copyWith(
+            color: secondaryTextColor(theme),
+            fontWeight: FontWeight.w600,
+          ),
+        ),
+        if (active) ...[
+          SizedBox(width: workspaceStyle ? 6 : 8),
+          _ThinkingDots(workspaceStyle: workspaceStyle),
+        ],
+      ],
+    );
+  }
+}
+
+class _ThinkingDots extends StatefulWidget {
+  const _ThinkingDots({required this.workspaceStyle});
+
+  final bool workspaceStyle;
+
+  @override
+  State<_ThinkingDots> createState() => _ThinkingDotsState();
+}
+
+class _ThinkingDotsState extends State<_ThinkingDots>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _controller;
+
+  @override
+  void initState() {
+    super.initState();
+    _controller = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 900),
+    )..repeat();
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final dotColor = secondaryTextColor(theme);
+    final dotSize = widget.workspaceStyle ? 4.0 : 5.0;
+    final gap = widget.workspaceStyle ? 4.0 : 5.0;
+    final travel = widget.workspaceStyle ? 3.0 : 4.0;
+
+    return AnimatedBuilder(
+      animation: _controller,
+      builder: (context, child) {
+        return Row(
+          key: const ValueKey('reasoning-thinking-dots'),
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            for (var index = 0; index < 3; index += 1) ...[
+              if (index > 0) SizedBox(width: gap),
+              Transform.translate(
+                offset: Offset(0, _dotOffset(index, travel)),
+                child: Opacity(
+                  opacity: _dotOpacity(index),
+                  child: Container(
+                    width: dotSize,
+                    height: dotSize,
+                    decoration: BoxDecoration(
+                      color: dotColor,
+                      shape: BoxShape.circle,
+                    ),
+                  ),
+                ),
+              ),
+            ],
+          ],
+        );
+      },
+    );
+  }
+
+  double _dotOffset(int index, double travel) {
+    final progress = _dotProgress(index);
+    if (progress < 0.18) {
+      return -travel * (progress / 0.18);
+    }
+    if (progress < 0.36) {
+      return -travel * (1 - ((progress - 0.18) / 0.18));
+    }
+    return 0;
+  }
+
+  double _dotOpacity(int index) {
+    final progress = _dotProgress(index);
+    if (progress < 0.18) {
+      return 0.45 + (progress / 0.18) * 0.55;
+    }
+    if (progress < 0.36) {
+      return 0.45 + (1 - ((progress - 0.18) / 0.18)) * 0.55;
+    }
+    return 0.45;
+  }
+
+  double _dotProgress(int index) {
+    var value = _controller.value - (index * 0.14);
+    while (value < 0) {
+      value += 1;
+    }
+    while (value >= 1) {
+      value -= 1;
+    }
+    return value;
+  }
+}
+
+class _PlanMessageBody extends StatelessWidget {
+  const _PlanMessageBody({
+    required this.item,
+    required this.planState,
+    required this.workspaceStyle,
+  });
+
+  final CodexThreadItem item;
+  final _PlanState planState;
   final bool workspaceStyle;
 
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    final label = _localizedText(context, 'Thinking', '正在思考');
-    return Text(
-      label,
-      style: theme.textTheme.labelMedium?.copyWith(
-        color: secondaryTextColor(theme),
-        fontWeight: FontWeight.w600,
+    final completedCount = planState.steps
+        .where((step) => step.status == _PlanStepStatus.completed)
+        .length;
+    final progressLabel = _localizedPlanProgressLabel(
+      context,
+      completed: completedCount,
+      total: planState.steps.length,
+    );
+
+    return Container(
+      key: ValueKey('plan-card:${item.id}'),
+      decoration: BoxDecoration(
+        color: mutedPanelBackgroundColor(theme),
+        borderRadius: BorderRadius.circular(workspaceStyle ? 14 : 16),
+        border: Border.all(color: borderColor(theme)),
       ),
+      padding: EdgeInsets.fromLTRB(
+        workspaceStyle ? 12 : 14,
+        workspaceStyle ? 10 : 12,
+        workspaceStyle ? 12 : 14,
+        workspaceStyle ? 10 : 12,
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            progressLabel,
+            style: theme.textTheme.labelMedium?.copyWith(
+              color: secondaryTextColor(theme),
+              fontWeight: FontWeight.w600,
+            ),
+          ),
+          SizedBox(height: workspaceStyle ? 10 : 12),
+          for (var index = 0; index < planState.steps.length; index += 1) ...[
+            if (index > 0) SizedBox(height: workspaceStyle ? 8 : 10),
+            _PlanStepRow(
+              index: index,
+              step: planState.steps[index],
+              workspaceStyle: workspaceStyle,
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+}
+
+class _PlanStepRow extends StatelessWidget {
+  const _PlanStepRow({
+    required this.index,
+    required this.step,
+    required this.workspaceStyle,
+  });
+
+  final int index;
+  final _PlanStep step;
+  final bool workspaceStyle;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final iconColor = switch (step.status) {
+      _PlanStepStatus.completed => theme.colorScheme.primary,
+      _PlanStepStatus.inProgress => theme.colorScheme.secondary,
+      _PlanStepStatus.pending => secondaryTextColor(theme),
+    };
+    final icon = switch (step.status) {
+      _PlanStepStatus.completed => Icons.check_circle_rounded,
+      _PlanStepStatus.inProgress => Icons.adjust_rounded,
+      _PlanStepStatus.pending => Icons.radio_button_unchecked_rounded,
+    };
+
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Padding(
+          padding: const EdgeInsets.only(top: 1),
+          child: Icon(icon, size: workspaceStyle ? 16 : 18, color: iconColor),
+        ),
+        SizedBox(width: workspaceStyle ? 8 : 10),
+        Expanded(
+          child: Text(
+            '${index + 1}. ${step.label}',
+            style: theme.textTheme.bodyMedium?.copyWith(
+              height: 1.45,
+              color: theme.colorScheme.onSurface,
+              decoration: step.status == _PlanStepStatus.completed
+                  ? TextDecoration.lineThrough
+                  : null,
+              decorationColor: theme.colorScheme.onSurface.withValues(
+                alpha: 0.5,
+              ),
+            ),
+          ),
+        ),
+      ],
     );
   }
 }
@@ -296,7 +539,7 @@ class _UserMessagePartView extends StatelessWidget {
         return _MessageImageView(
           imageProvider: _providerForLocalPath(part.path),
           fallbackLabel: part.text,
-          caption: part.path,
+          caption: null,
           workspaceStyle: workspaceStyle,
         );
       case UserMessagePartType.mention:
@@ -457,10 +700,7 @@ List<_FencedCodeSegment>? _parseFencedCodeSegments(String value) {
 
   void flushCode() {
     segments.add(
-      _FencedCodeSegment.code(
-        codeBuffer.join('\n'),
-        language: activeLanguage,
-      ),
+      _FencedCodeSegment.code(codeBuffer.join('\n'), language: activeLanguage),
     );
     codeBuffer.clear();
     activeLanguage = null;
@@ -1527,6 +1767,21 @@ String? _captionForImageReference(String? reference) {
   return value;
 }
 
+enum _PlanStepStatus { completed, inProgress, pending }
+
+class _PlanStep {
+  const _PlanStep({required this.label, required this.status});
+
+  final String label;
+  final _PlanStepStatus status;
+}
+
+class _PlanState {
+  const _PlanState({required this.steps});
+
+  final List<_PlanStep> steps;
+}
+
 bool _isLocalFileMention(UserMessagePart part) {
   final path = part.path?.trim() ?? '';
   return path.isNotEmpty && !path.contains('://');
@@ -1602,6 +1857,132 @@ String _localizedText(BuildContext context, String english, String chinese) {
     return english;
   }
   return strings.text(english, chinese);
+}
+
+String _localizedPlanProgressLabel(
+  BuildContext context, {
+  required int completed,
+  required int total,
+}) {
+  final strings = Localizations.of<AppStrings>(context, AppStrings);
+  if (strings == null || !strings.isChinese) {
+    return '$completed out of $total tasks completed';
+  }
+  return '已完成 $completed / $total 项任务';
+}
+
+_PlanState? _planStateFromItem(CodexThreadItem item) {
+  final structured = _planStepsFromStructuredRaw(item.raw);
+  if (structured.isNotEmpty) {
+    return _PlanState(steps: structured);
+  }
+
+  final parsed = _planStepsFromBody(item.body);
+  if (parsed.isNotEmpty) {
+    return _PlanState(steps: parsed);
+  }
+  return null;
+}
+
+List<_PlanStep> _planStepsFromStructuredRaw(Map<String, dynamic> raw) {
+  const candidateKeys = ['steps', 'plan', 'items'];
+  for (final key in candidateKeys) {
+    final steps = asJsonList(raw[key]);
+    if (steps.isEmpty) {
+      continue;
+    }
+    final parsed = steps
+        .map(asJsonMap)
+        .map(_planStepFromMap)
+        .whereType<_PlanStep>()
+        .toList(growable: false);
+    if (parsed.isNotEmpty) {
+      return parsed;
+    }
+  }
+  return const [];
+}
+
+_PlanStep? _planStepFromMap(Map<String, dynamic> raw) {
+  if (raw.isEmpty) {
+    return null;
+  }
+  final label = readString(raw, const [
+    'step',
+    'title',
+    'text',
+    'label',
+    'description',
+    'name',
+  ]).trim();
+  if (label.isEmpty) {
+    return null;
+  }
+  return _PlanStep(
+    label: label,
+    status: _planStepStatusFromValue(raw['status']),
+  );
+}
+
+List<_PlanStep> _planStepsFromBody(String body) {
+  final trimmedBody = body.trim();
+  if (trimmedBody.isEmpty) {
+    return const [];
+  }
+  final lines = const LineSplitter().convert(trimmedBody);
+  final steps = <_PlanStep>[];
+  for (final line in lines) {
+    final trimmed = line.trim();
+    if (trimmed.isEmpty) {
+      continue;
+    }
+
+    final checkboxMatch = RegExp(
+      r'^[-*]\s+\[( |x|X)\]\s+(.*)$',
+    ).firstMatch(trimmed);
+    if (checkboxMatch != null) {
+      final checked = checkboxMatch.group(1)?.toLowerCase() == 'x';
+      final label = checkboxMatch.group(2)?.trim() ?? '';
+      if (label.isNotEmpty) {
+        steps.add(
+          _PlanStep(
+            label: label,
+            status: checked
+                ? _PlanStepStatus.completed
+                : _PlanStepStatus.pending,
+          ),
+        );
+      }
+      continue;
+    }
+
+    final numberedMatch = RegExp(r'^\d+[.)]\s+(.*)$').firstMatch(trimmed);
+    if (numberedMatch != null) {
+      final label = numberedMatch.group(1)?.trim() ?? '';
+      if (label.isNotEmpty) {
+        steps.add(_PlanStep(label: label, status: _PlanStepStatus.pending));
+      }
+    }
+  }
+  return steps;
+}
+
+_PlanStepStatus _planStepStatusFromValue(Object? value) {
+  final status = value?.toString().trim().toLowerCase() ?? '';
+  switch (status) {
+    case 'completed':
+    case 'done':
+      return _PlanStepStatus.completed;
+    case 'in_progress':
+    case 'in-progress':
+    case 'active':
+    case 'started':
+    case 'running':
+    case 'current':
+      return _PlanStepStatus.inProgress;
+    default:
+      return _PlanStepStatus.pending;
+  }
 }
 
 String? _commandExecutionOutput(CodexThreadItem item) {
@@ -1722,22 +2103,6 @@ class _WebSearchSummary {
   final String primaryText;
   final String? secondaryText;
   final IconData icon;
-}
-
-double _reasoningStatusLineHeight(BuildContext context) {
-  final theme = Theme.of(context);
-  final text = _localizedText(context, 'Thinking', '正在思考');
-  final style = theme.textTheme.labelMedium?.copyWith(
-    color: secondaryTextColor(theme),
-    fontWeight: FontWeight.w600,
-  );
-  final painter = TextPainter(
-    text: TextSpan(text: text, style: style),
-    textDirection: Directionality.of(context),
-    textScaler: MediaQuery.textScalerOf(context),
-    maxLines: 1,
-  )..layout();
-  return painter.size.height;
 }
 
 class _VsCodeSyntaxHighlighter {

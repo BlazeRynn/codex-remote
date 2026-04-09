@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:io';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
@@ -101,18 +102,18 @@ class _ThreadDetailPaneState extends State<ThreadDetailPane>
     with AutomaticKeepAliveClientMixin<ThreadDetailPane> {
   static final Map<String, CodexThreadBundle> _bundleCache = {};
   static final Map<String, CodexThreadRuntime> _runtimeCache = {};
-  static final Map<String, double> _timelineOffsetCache = {};
-  static final Map<String, bool> _followConversationCache = {};
 
   late final CodexRepository _repository;
   late final TextEditingController _composerController;
   late final ScrollController _timelineScrollController;
   late final ThreadRealtimeAccumulator _realtimeAccumulator;
   late CodexThreadBundle _bundle;
+  late ThreadMessageListProjection _conversationProjection;
   late CodexThreadRuntime _runtime;
   final List<BridgeRealtimeEvent> _liveEvents = [];
 
   bool _loading = true;
+  bool _projectionLoading = false;
   bool _runtimeLoading = true;
   bool _modelsLoading = true;
   bool _submitting = false;
@@ -137,10 +138,15 @@ class _ThreadDetailPaneState extends State<ThreadDetailPane>
   bool _realtimeAttachPending = false;
   bool _programmaticScrollInProgress = false;
   bool _userScrollInProgress = false;
+  bool _showInitialViewportMask = true;
+  bool _awaitingInitialContentSettle = false;
   bool _scrollToBottomScheduled = false;
   bool _scrollToBottomQueued = false;
   bool _queuedScrollToBottomAnimated = false;
   bool _queuedScrollToBottomForce = false;
+  bool _projectionTaskInFlight = false;
+  bool _projectionRefreshQueued = false;
+  bool _queuedProjectionForceScroll = false;
   int _scrollToBottomRequestId = 0;
 
   @override
@@ -153,15 +159,13 @@ class _ThreadDetailPaneState extends State<ThreadDetailPane>
     super.initState();
     _repository = createCodexRepository(widget.config);
     _composerController = TextEditingController();
-    _followConversation =
-        _followConversationCache[widget.thread.id] ?? _followConversation;
-    _timelineScrollController = ScrollController(
-      initialScrollOffset: _initialTimelineOffsetForThread(widget.thread.id),
-    )..addListener(_handleTimelineScroll);
+    _timelineScrollController = ScrollController()
+      ..addListener(_handleTimelineScroll);
     _realtimeAccumulator = ThreadRealtimeAccumulator(
       threadId: widget.thread.id,
     );
     _bundle = CodexThreadBundle(thread: widget.thread, items: const []);
+    _conversationProjection = ThreadMessageListProjection.empty();
     _runtime = CodexThreadRuntime(
       threadId: widget.thread.id,
       pendingRequests: const [],
@@ -241,7 +245,6 @@ class _ThreadDetailPaneState extends State<ThreadDetailPane>
   }
 
   void _activateFollowConversationAndScroll() {
-    _timelineOffsetCache.remove(widget.thread.id);
     if (_followConversation) {
       _scrollConversationToBottom(animated: false, force: true);
       return;
@@ -256,7 +259,6 @@ class _ThreadDetailPaneState extends State<ThreadDetailPane>
   void dispose() {
     _refreshDebounce?.cancel();
     _reattachProbeTimer?.cancel();
-    _storeTimelineScrollState();
     _composerController.dispose();
     _timelineScrollController
       ..removeListener(_handleTimelineScroll)
@@ -280,9 +282,6 @@ class _ThreadDetailPaneState extends State<ThreadDetailPane>
 
   void _primeFromCache() {
     final cachedBundle = _bundleCache[widget.thread.id];
-    final hasCachedTimelineOffset = _timelineOffsetCache.containsKey(
-      widget.thread.id,
-    );
     if (cachedBundle != null) {
       _bundle = CodexThreadBundle(
         thread: _mergeThreadSummary(widget.thread, cachedBundle.thread),
@@ -290,13 +289,10 @@ class _ThreadDetailPaneState extends State<ThreadDetailPane>
       );
       _realtimeAccumulator.replaceSnapshot(cachedBundle.items);
       _loading = false;
-      if (cachedBundle.items.isNotEmpty &&
-          !hasCachedTimelineOffset &&
-          _followConversation) {
-        WidgetsBinding.instance.addPostFrameCallback((_) {
-          _scrollConversationToBottom(animated: false, force: true);
-        });
-      }
+      _requestConversationProjection(
+        forceScrollToBottom:
+            cachedBundle.items.isNotEmpty && _followConversation,
+      );
     }
 
     final cachedRuntime = _runtimeCache[widget.thread.id];
@@ -383,33 +379,95 @@ class _ThreadDetailPaneState extends State<ThreadDetailPane>
     while (_runtimeCache.length > 24) {
       _runtimeCache.remove(_runtimeCache.keys.first);
     }
-    while (_timelineOffsetCache.length > 24) {
-      final threadId = _timelineOffsetCache.keys.first;
-      _timelineOffsetCache.remove(threadId);
-      _followConversationCache.remove(threadId);
-    }
   }
 
-  double _initialTimelineOffsetForThread(String threadId) {
-    final cachedOffset = _timelineOffsetCache[threadId];
-    if (cachedOffset == null || !cachedOffset.isFinite || cachedOffset < 0) {
-      return 0;
+  void _requestConversationProjection({bool forceScrollToBottom = false}) {
+    _projectionRefreshQueued = true;
+    _queuedProjectionForceScroll =
+        _queuedProjectionForceScroll || forceScrollToBottom;
+    if (_projectionTaskInFlight) {
+      return;
     }
-    return cachedOffset;
+    unawaited(_drainConversationProjectionQueue());
   }
 
-  void _storeTimelineScrollState() {
-    _followConversationCache[widget.thread.id] = _followConversation;
-    if (!_timelineScrollController.hasClients) {
+  Future<void> _drainConversationProjectionQueue() async {
+    if (_projectionTaskInFlight) {
       return;
     }
+    _projectionTaskInFlight = true;
+    final requestThreadId = widget.thread.id;
 
-    final position = _timelineScrollController.position;
-    final pixels = position.pixels;
-    if (!pixels.isFinite || pixels < 0) {
-      return;
+    try {
+      while (mounted && _projectionRefreshQueued) {
+        final forceScrollToBottom = _queuedProjectionForceScroll;
+        _projectionRefreshQueued = false;
+        _queuedProjectionForceScroll = false;
+
+        final items = _realtimeAccumulator.items;
+        final previousProjection = _conversationProjection;
+        final projectionRevision = _realtimeAccumulator.revision;
+        final useBackgroundProjection =
+            shouldProjectThreadMessageListInBackground(items);
+        if (useBackgroundProjection && !_projectionLoading && mounted) {
+          setState(() {
+            _projectionLoading = true;
+          });
+        }
+
+        ThreadMessageListProjection nextProjection;
+        try {
+          nextProjection = useBackgroundProjection
+              ? await projectThreadMessageListAsync(items)
+              : projectThreadMessageList(items);
+        } catch (error) {
+          _debugLog(
+            'projection.fallback',
+            fields: {'error': error.toString(), 'itemCount': items.length},
+          );
+          nextProjection = projectThreadMessageList(items);
+        }
+
+        if (!mounted || requestThreadId != widget.thread.id) {
+          return;
+        }
+        if (_realtimeAccumulator.revision != projectionRevision) {
+          _projectionRefreshQueued = true;
+          _queuedProjectionForceScroll =
+              _queuedProjectionForceScroll || forceScrollToBottom;
+          _debugLog(
+            'projection.stale_drop',
+            fields: {
+              'projectedRevision': projectionRevision,
+              'currentRevision': _realtimeAccumulator.revision,
+              'itemCount': items.length,
+            },
+          );
+          continue;
+        }
+
+        setState(() {
+          _conversationProjection = nextProjection;
+          _projectionLoading = false;
+        });
+
+        if (_showInitialViewportMask) {
+          if (nextProjection.entries.isEmpty) {
+            _dismissInitialViewportMask();
+          } else {
+            _awaitingInitialContentSettle = true;
+          }
+        }
+
+        _maybeScrollConversationToBottom(
+          previousProjection: previousProjection,
+          nextProjection: nextProjection,
+          force: forceScrollToBottom,
+        );
+      }
+    } finally {
+      _projectionTaskInFlight = false;
     }
-    _timelineOffsetCache[widget.thread.id] = pixels;
   }
 
   Future<void> _loadBundle({
@@ -430,10 +488,6 @@ class _ThreadDetailPaneState extends State<ThreadDetailPane>
 
     try {
       final previousBundle = _bundle;
-      final previousConversationItems = _realtimeAccumulator.items;
-      final previousProjection = projectThreadMessageList(
-        previousConversationItems,
-      );
       final bundle = await _repository.getThreadBundle(widget.thread.id);
       if (!mounted) {
         return;
@@ -452,7 +506,6 @@ class _ThreadDetailPaneState extends State<ThreadDetailPane>
 
       _realtimeAccumulator.replaceSnapshot(bundle.items);
       final nextConversationItems = _realtimeAccumulator.items;
-      final nextProjection = projectThreadMessageList(nextConversationItems);
       setState(() {
         _bundle = CodexThreadBundle(thread: mergedThread, items: bundle.items);
         _loading = false;
@@ -468,10 +521,8 @@ class _ThreadDetailPaneState extends State<ThreadDetailPane>
         },
       );
       _maybeProbeRealtimeAttach();
-      _maybeScrollConversationToBottom(
-        previousProjection: previousProjection,
-        nextProjection: nextProjection,
-        force:
+      _requestConversationProjection(
+        forceScrollToBottom:
             forceScrollToBottom ||
             (previousBundle.items.isEmpty && nextConversationItems.isNotEmpty),
       );
@@ -486,6 +537,7 @@ class _ThreadDetailPaneState extends State<ThreadDetailPane>
           _error = error.toString();
         }
       });
+      _dismissInitialViewportMask();
     } finally {
       _bundleRequestInFlight = false;
     }
@@ -538,6 +590,19 @@ class _ThreadDetailPaneState extends State<ThreadDetailPane>
     return false;
   }
 
+  bool _handleComposerDockSizeChanged(SizeChangedLayoutNotification _) {
+    if (!_followConversation || _userScrollInProgress) {
+      return false;
+    }
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted || !_followConversation || _userScrollInProgress) {
+        return;
+      }
+      _scrollConversationToBottom(animated: false, force: true);
+    });
+    return false;
+  }
+
   void _updateUserScrollState({required bool active}) {
     if (_userScrollInProgress == active) {
       return;
@@ -587,8 +652,10 @@ class _ThreadDetailPaneState extends State<ThreadDetailPane>
     required ThreadMessageListProjection nextProjection,
     bool force = false,
   }) {
-    final changed =
-        previousProjection.tailSignature != nextProjection.tailSignature;
+    final changed = _shouldAutoScrollForProjectionChange(
+      previousProjection,
+      nextProjection,
+    );
     if (!force && (!changed || !_followConversation || _userScrollInProgress)) {
       return;
     }
@@ -636,6 +703,10 @@ class _ThreadDetailPaneState extends State<ThreadDetailPane>
       animated: animated,
       force: force,
     );
+    if (_awaitingInitialContentSettle) {
+      _awaitingInitialContentSettle = false;
+      _dismissInitialViewportMask();
+    }
 
     if (!mounted || _userScrollInProgress || !_scrollToBottomQueued) {
       return;
@@ -857,19 +928,8 @@ class _ThreadDetailPaneState extends State<ThreadDetailPane>
           _refreshDebounce?.cancel();
           _refreshDebounce = null;
 
-          final previousConversationItems = _realtimeAccumulator.items;
-          final previousProjection = projectThreadMessageList(
-            previousConversationItems,
-          );
-          final previousTail = previousProjection.tailItem;
           final conversationChanged = _realtimeAccumulator.apply(event);
-          final nextConversationItems = conversationChanged
-              ? _realtimeAccumulator.items
-              : previousConversationItems;
-          final nextProjection = projectThreadMessageList(
-            nextConversationItems,
-          );
-          final tail = nextProjection.tailItem;
+          final nextConversationItems = _realtimeAccumulator.items;
           setState(() {
             _liveConnectionState = LiveConnectionState.connected;
             _applyRealtimeSessionState(event);
@@ -886,9 +946,9 @@ class _ThreadDetailPaneState extends State<ThreadDetailPane>
               'itemId': realtimeEventItemId(event),
               'delta': realtimeEventDeltaText(event),
               'conversationChanged': conversationChanged,
-              'tailItemId': tail?.id,
-              'tailTurnId': tail?.raw['turnId'],
-              'tailBodyLength': tail?.body.length,
+              'tailItemId': _conversationProjection.tailItem?.id,
+              'tailTurnId': _conversationProjection.tailItem?.raw['turnId'],
+              'tailBodyLength': _conversationProjection.tailBodyLength,
               'activeTurnId': _runtime.activeTurnId,
             },
           );
@@ -898,15 +958,16 @@ class _ThreadDetailPaneState extends State<ThreadDetailPane>
               fields: {
                 'turnId': realtimeEventTurnId(event),
                 'itemId': realtimeEventItemId(event),
-                'tailBodyLength.before': previousTail?.body.length ?? 0,
-                'tailBodyLength.after': tail?.body.length ?? 0,
+                'tailBodyLength.before': _conversationProjection.tailBodyLength,
+                'tailBodyLength.after': nextConversationItems.isEmpty
+                    ? 0
+                    : nextConversationItems.last.body.length,
               },
             );
           }
-          _maybeScrollConversationToBottom(
-            previousProjection: previousProjection,
-            nextProjection: nextProjection,
-          );
+          if (conversationChanged) {
+            _requestConversationProjection();
+          }
           _scheduleFollowUpRefresh(event);
         },
         onError: (Object error) {
@@ -1099,6 +1160,20 @@ class _ThreadDetailPaneState extends State<ThreadDetailPane>
         return;
       }
     } catch (_) {}
+  }
+
+  void _dismissInitialViewportMask() {
+    if (!_showInitialViewportMask || !mounted) {
+      return;
+    }
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted || !_showInitialViewportMask) {
+        return;
+      }
+      setState(() {
+        _showInitialViewportMask = false;
+      });
+    });
   }
 
   bool _shouldReloadBundle(BridgeRealtimeEvent event) {
@@ -1434,18 +1509,15 @@ class _ThreadDetailPaneState extends State<ThreadDetailPane>
     super.build(context);
     final theme = Theme.of(context);
     final strings = context.strings;
-    final compactLayout =
-        widget.workspaceStyle || MediaQuery.sizeOf(context).width < 640;
-    final conversationProjection = projectThreadMessageList(
-      _realtimeAccumulator.items,
-    );
+    final compactLayout = MediaQuery.sizeOf(context).width < 640;
+    final conversationProjection = _conversationProjection;
     final conversationEntries = conversationProjection.entries;
     final showScrollToBottomButton =
         conversationEntries.isNotEmpty && !_followConversation;
     final liveMessage = _liveError != null && _liveError!.trim().isNotEmpty
         ? _liveError!.trim()
         : _liveEvents.isEmpty
-        ? strings.text('Waiting for live updates', '等待实时更新')
+        ? strings.text('Waiting for live updates', '绛夊緟瀹炴椂鏇存柊')
         : _liveEvents.first.description.trim().isEmpty
         ? _humanize(context, _liveEvents.first.type)
         : _liveEvents.first.description.trim();
@@ -1502,67 +1574,81 @@ class _ThreadDetailPaneState extends State<ThreadDetailPane>
               child: _InlineNotice(message: _liveError!, error: true),
             ),
           Expanded(
-            child: ThreadMessageList(
-              projection: conversationProjection,
-              loading: _loading,
-              errorMessage: _error,
-              scrollController: _timelineScrollController,
-              onRefresh: _reloadAll,
-              onScrollNotification: _handleTimelineScrollNotification,
-              workspaceStyle: widget.workspaceStyle,
-              showLiveStatus: !compactLayout,
-              liveStateLabel: _liveConnectionState.name,
-              liveMessage: liveMessage,
-              hasActiveTurn: _runtime.activeTurnId != null,
-              showScrollToBottomButton: showScrollToBottomButton,
-              onScrollToBottom: () {
-                _scrollConversationToBottom(force: true);
-              },
-              footer: _runtime.pendingRequests.isEmpty
-                  ? null
-                  : _PendingRequestsPanel(
-                      requests: _runtime.pendingRequests,
-                      busy: _responding,
-                      onRespond: _respondToPendingRequest,
-                      onOpenStructuredRequest: _openStructuredRequest,
-                      onCopyUrl: _copyRequestUrl,
-                      workspaceStyle: widget.workspaceStyle,
-                      expanded: _pendingRequestsExpanded,
-                      onToggleExpanded: () {
-                        setState(() {
-                          _pendingRequestsExpanded = !_pendingRequestsExpanded;
-                        });
-                      },
-                    ),
+            child: Stack(
+              fit: StackFit.expand,
+              children: [
+                ThreadMessageList(
+                  projection: conversationProjection,
+                  loading: _loading || _projectionLoading,
+                  errorMessage: _error,
+                  scrollController: _timelineScrollController,
+                  onRefresh: _reloadAll,
+                  onScrollNotification: _handleTimelineScrollNotification,
+                  workspaceStyle: widget.workspaceStyle,
+                  showLiveStatus: !compactLayout,
+                  liveStateLabel: _liveConnectionState.name,
+                  liveMessage: liveMessage,
+                  hasActiveTurn: _runtime.activeTurnId != null,
+                  stickToBottom: _followConversation && !_userScrollInProgress,
+                  showScrollToBottomButton: showScrollToBottomButton,
+                  onScrollToBottom: () {
+                    _scrollConversationToBottom(force: true);
+                  },
+                  footer: _runtime.pendingRequests.isEmpty
+                      ? null
+                      : _PendingRequestsPanel(
+                          requests: _runtime.pendingRequests,
+                          busy: _responding,
+                          onRespond: _respondToPendingRequest,
+                          onOpenStructuredRequest: _openStructuredRequest,
+                          onCopyUrl: _copyRequestUrl,
+                          workspaceStyle: widget.workspaceStyle,
+                          expanded: _pendingRequestsExpanded,
+                          onToggleExpanded: () {
+                            setState(() {
+                              _pendingRequestsExpanded =
+                                  !_pendingRequestsExpanded;
+                            });
+                          },
+                        ),
+                ),
+                _InitialViewportMask(
+                  visible: _showInitialViewportMask,
+                  workspaceStyle: widget.workspaceStyle,
+                ),
+              ],
             ),
           ),
-          _ComposerDock(
-            composerController: _composerController,
-            attachments: _composerAttachments,
-            selectedMode: _selectedMode,
-            onModeChanged: (mode) {
-              setState(() {
-                _selectedMode = mode;
-              });
-            },
-            models: _models,
-            selectedModelId: _selectedModelId,
-            onModelChanged: (value) {
-              setState(() {
-                _selectedModelId = value;
-              });
-            },
-            submitting: _submitting,
-            loadingModels: _modelsLoading,
-            runtimeLoading: _runtimeLoading,
-            hasActiveTurn: _runtime.activeTurnId != null,
-            onSubmit: _submitComposer,
-            onInterrupt: _interruptTurn,
-            onPickAttachments: _pickComposerAttachments,
-            onPasteFromClipboard: _pasteComposerContent,
-            onRemoveAttachment: _removeComposerAttachment,
-            workspaceStyle: widget.workspaceStyle,
-            compact: compactLayout,
+          NotificationListener<SizeChangedLayoutNotification>(
+            onNotification: _handleComposerDockSizeChanged,
+            child: _ComposerDock(
+              composerController: _composerController,
+              attachments: _composerAttachments,
+              selectedMode: _selectedMode,
+              onModeChanged: (mode) {
+                setState(() {
+                  _selectedMode = mode;
+                });
+              },
+              models: _models,
+              selectedModelId: _selectedModelId,
+              onModelChanged: (value) {
+                setState(() {
+                  _selectedModelId = value;
+                });
+              },
+              submitting: _submitting,
+              loadingModels: _modelsLoading,
+              runtimeLoading: _runtimeLoading,
+              hasActiveTurn: _runtime.activeTurnId != null,
+              onSubmit: _submitComposer,
+              onInterrupt: _interruptTurn,
+              onPickAttachments: _pickComposerAttachments,
+              onPasteFromClipboard: _pasteComposerContent,
+              onRemoveAttachment: _removeComposerAttachment,
+              workspaceStyle: widget.workspaceStyle,
+              compact: compactLayout,
+            ),
           ),
         ],
       ),
@@ -1571,6 +1657,44 @@ class _ThreadDetailPaneState extends State<ThreadDetailPane>
 }
 
 enum LiveConnectionState { disconnected, connecting, connected, failed }
+
+class _InitialViewportMask extends StatelessWidget {
+  const _InitialViewportMask({
+    required this.visible,
+    required this.workspaceStyle,
+  });
+
+  final bool visible;
+  final bool workspaceStyle;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return IgnorePointer(
+      ignoring: !visible,
+      child: AnimatedOpacity(
+        opacity: visible ? 1 : 0,
+        duration: const Duration(milliseconds: 180),
+        curve: Curves.easeOut,
+        child: DecoratedBox(
+          decoration: BoxDecoration(color: panelBackgroundColor(theme)),
+          child: Center(
+            child: SizedBox(
+              width: workspaceStyle ? 32 : 40,
+              height: workspaceStyle ? 32 : 40,
+              child: CircularProgressIndicator(
+                strokeWidth: workspaceStyle ? 3 : 4,
+                valueColor: AlwaysStoppedAnimation<Color>(
+                  theme.colorScheme.primary,
+                ),
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
 
 DateTime? _laterTimestamp(DateTime? left, DateTime? right) {
   if (left == null) {
@@ -1590,6 +1714,44 @@ bool _sameTimestamp(DateTime? left, DateTime? right) {
     return false;
   }
   return left.isAtSameMomentAs(right);
+}
+
+bool _shouldAutoScrollForProjectionChange(
+  ThreadMessageListProjection previousProjection,
+  ThreadMessageListProjection nextProjection,
+) {
+  if (previousProjection.tailSignature == nextProjection.tailSignature) {
+    return false;
+  }
+
+  if (previousProjection.entries.isEmpty) {
+    return nextProjection.entries.isNotEmpty;
+  }
+
+  if (nextProjection.entries.length > previousProjection.entries.length) {
+    return true;
+  }
+
+  if (nextProjection.tailBodyLength > previousProjection.tailBodyLength) {
+    return true;
+  }
+
+  final previousTail = previousProjection.tailItem;
+  final nextTail = nextProjection.tailItem;
+  if (previousTail == null || nextTail == null) {
+    return true;
+  }
+
+  final previousBubbleKey =
+      previousTail.raw['bubbleKey']?.toString().trim().isNotEmpty == true
+      ? previousTail.raw['bubbleKey']!.toString()
+      : previousTail.id;
+  final nextBubbleKey =
+      nextTail.raw['bubbleKey']?.toString().trim().isNotEmpty == true
+      ? nextTail.raw['bubbleKey']!.toString()
+      : nextTail.id;
+
+  return previousBubbleKey != nextBubbleKey;
 }
 
 extension on _ThreadDetailPaneState {
@@ -1644,20 +1806,20 @@ class _WorkspaceHeaderPanel extends StatelessWidget {
       _humanize(context, thread.status),
       _humanize(context, liveConnectionState.name),
       activeTurnId == null
-          ? strings.text('Idle', '空闲')
-          : strings.text('Active turn', '轮次活动中'),
+          ? strings.text('Idle', '绌洪棽')
+          : strings.text('Active turn', '当前轮次进行中'),
       if (pendingCount > 0)
-        strings.text('$pendingCount pending', '$pendingCount 个待处理'),
+        strings.text('$pendingCount pending', '$pendingCount 涓緟澶勭悊'),
       if (thread.cwd != null) _workspaceLabel(context, thread.cwd),
       _formatRelative(context, thread.updatedAt),
-    ].join(' • ');
+    ].join(' ? ');
     final metadata = <String>[
       if (thread.cwd != null) _workspaceLabel(context, thread.cwd),
       '${strings.text('Updated', '更新于')} ${_formatRelative(context, thread.updatedAt)}',
       if (!workspaceStyle)
         strings.text('Pending $pendingCount', '待处理 $pendingCount'),
     ];
-    final metadataLine = metadata.join(' • ');
+    final metadataLine = metadata.join(' ? ');
     if (workspaceStyle) {
       return DecoratedBox(
         decoration: BoxDecoration(
@@ -1697,7 +1859,7 @@ class _WorkspaceHeaderPanel extends StatelessWidget {
                 onPressed: () {
                   unawaited(onRefresh());
                 },
-                tooltip: strings.text('Refresh', '刷新'),
+                tooltip: strings.text('Refresh', '鍒锋柊'),
                 visualDensity: VisualDensity.compact,
                 iconSize: 18,
                 splashRadius: 18,
@@ -1718,7 +1880,7 @@ class _WorkspaceHeaderPanel extends StatelessWidget {
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   Text(
-                    strings.text('Current session', '当前会话'),
+                    strings.text('Current session', '褰撳墠浼氳瘽'),
                     style: theme.textTheme.labelMedium?.copyWith(
                       color: secondaryTextColor(theme),
                       letterSpacing: 0.6,
@@ -1741,7 +1903,7 @@ class _WorkspaceHeaderPanel extends StatelessWidget {
               onPressed: () {
                 unawaited(onRefresh());
               },
-              tooltip: strings.text('Refresh', '刷新'),
+              tooltip: strings.text('Refresh', '鍒锋柊'),
               visualDensity: VisualDensity.compact,
               iconSize: 18,
               icon: const Icon(Icons.sync),
@@ -1764,7 +1926,7 @@ class _WorkspaceHeaderPanel extends StatelessWidget {
                   children: [
                     if (!workspaceStyle) ...[
                       Text(
-                        strings.text('Current session', '当前会话'),
+                        strings.text('Current session', '褰撳墠浼氳瘽'),
                         style: theme.textTheme.labelLarge?.copyWith(
                           color: secondaryTextColor(theme),
                           letterSpacing: 1.1,
@@ -1784,13 +1946,13 @@ class _WorkspaceHeaderPanel extends StatelessWidget {
                         _SessionMetaBadge(
                           compact: workspaceStyle,
                           value:
-                              '${strings.text('Live', '实时')} ${_humanize(context, liveConnectionState.name)}',
+                              '${strings.text('Live', '瀹炴椂')} ${_humanize(context, liveConnectionState.name)}',
                         ),
                         _SessionMetaBadge(
                           compact: workspaceStyle,
                           value: activeTurnId == null
-                              ? strings.text('Turn idle', '轮次空闲')
-                              : strings.text('Turn active', '轮次活动中'),
+                              ? strings.text('Turn idle', '杞绌洪棽')
+                              : strings.text('Turn active', '轮次进行中'),
                         ),
                       ],
                     ),
@@ -1837,7 +1999,7 @@ class _WorkspaceHeaderPanel extends StatelessWidget {
                   onPressed: () {
                     unawaited(onRefresh());
                   },
-                  tooltip: strings.text('Refresh', '刷新'),
+                  tooltip: strings.text('Refresh', '鍒锋柊'),
                   visualDensity: VisualDensity.compact,
                   icon: const Icon(Icons.sync),
                 )
@@ -1847,7 +2009,7 @@ class _WorkspaceHeaderPanel extends StatelessWidget {
                     unawaited(onRefresh());
                   },
                   icon: const Icon(Icons.sync),
-                  label: Text(strings.text('Refresh', '刷新')),
+                  label: Text(strings.text('Refresh', '鍒锋柊')),
                 ),
             ],
           ),
@@ -1866,7 +2028,7 @@ class _WorkspaceHeaderPanel extends StatelessWidget {
                   value: _humanize(context, thread.status),
                 ),
                 _InfoChip(
-                  label: strings.text('Live', '实时'),
+                  label: strings.text('Live', '瀹炴椂'),
                   value: _humanize(context, liveConnectionState.name),
                 ),
                 _InfoChip(
@@ -1874,10 +2036,10 @@ class _WorkspaceHeaderPanel extends StatelessWidget {
                   value: '$pendingCount',
                 ),
                 _InfoChip(
-                  label: strings.text('Turn', '轮次'),
+                  label: strings.text('Turn', '杞'),
                   value: activeTurnId == null
-                      ? strings.text('idle', '空闲')
-                      : strings.text('active', '活动中'),
+                      ? strings.text('idle', '绌洪棽')
+                      : strings.text('active', '进行中'),
                 ),
               ],
             ),
@@ -1952,7 +2114,7 @@ class _PendingRequestsPanel extends StatelessWidget {
     final strings = context.strings;
     final summary = strings.text(
       '${requests.length} pending request${requests.length == 1 ? '' : 's'}',
-      '${requests.length} 个待处理请求',
+      '${requests.length} 涓緟澶勭悊璇锋眰',
     );
     final firstTitle = requests.first.title.trim();
     return _SurfaceSection(
@@ -1985,10 +2147,10 @@ class _PendingRequestsPanel extends StatelessWidget {
                         const SizedBox(height: 4),
                         Text(
                           workspaceStyle && !expanded && firstTitle.isNotEmpty
-                              ? '$summary · $firstTitle'
+                              ? '$summary 路 $firstTitle'
                               : strings.text(
                                   'Approvals and follow-up prompts from the active session.',
-                                  '活动会话里的审批和后续提示会显示在这里。',
+                                  '当前会话中的审批和后续提示会显示在这里。',
                                 ),
                           maxLines: workspaceStyle && !expanded ? 1 : null,
                           overflow: workspaceStyle && !expanded
@@ -2010,8 +2172,8 @@ class _PendingRequestsPanel extends StatelessWidget {
                       ),
                       label: Text(
                         expanded
-                            ? strings.text('Hide', '收起')
-                            : strings.text('Show', '展开'),
+                            ? strings.text('Hide', '鏀惰捣')
+                            : strings.text('Show', '灞曞紑'),
                       ),
                     ),
                   ],
@@ -2145,7 +2307,7 @@ class _PendingRequestCard extends StatelessWidget {
                         unawaited(onCopyUrl(request.url!));
                       },
                 icon: const Icon(Icons.copy_all_outlined),
-                label: Text(strings.text('Copy URL', '复制 URL')),
+                label: Text(strings.text('Copy URL', '澶嶅埗 URL')),
               ),
             ],
             const SizedBox(height: 14),
@@ -2240,16 +2402,24 @@ class _ComposerDock extends StatelessWidget {
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final strings = context.strings;
-    final compactWorkspace = compact || workspaceStyle;
-    final helperText = hasActiveTurn
-        ? strings.text(
-            'Steer the active turn, or leave the box empty to interrupt it.',
-            '可以引导当前轮次；留空并发送会中断当前轮次。',
-          )
-        : strings.text(
-            'Start the next turn with the composer below.',
-            '使用下方输入框开始下一轮。',
-          );
+    // Keep desktop workspace styling separate from narrow-screen compact mode.
+    // Treating workspaceStyle as compact makes the composer too cramped on
+    // desktop layouts.
+    final compactWorkspace = compact;
+    final comfortableCompactComposer = compactWorkspace;
+    final composerMinLines = comfortableCompactComposer
+        ? 2
+        : (compactWorkspace ? 1 : 2);
+    final composerMaxLines = comfortableCompactComposer
+        ? 6
+        : (compactWorkspace ? 4 : 6);
+    final composerVerticalPadding = comfortableCompactComposer
+        ? 12.0
+        : (compactWorkspace ? 6.0 : 12.0);
+    final composerHorizontalPadding = comfortableCompactComposer
+        ? 16.0
+        : (compactWorkspace ? 12.0 : 16.0);
+    final composerInputMinHeight = comfortableCompactComposer ? 62.0 : 0.0;
     CodexModelOption? selectedModel;
     if (selectedModelId != null) {
       for (final model in models) {
@@ -2260,32 +2430,30 @@ class _ComposerDock extends StatelessWidget {
       }
     }
     final modelLabel = loadingModels && models.isEmpty
-        ? strings.text('Loading models', '加载模型')
+        ? strings.text('Loading models', '鍔犺浇妯″瀷')
         : selectedModel?.displayName ??
               selectedModelId ??
-              strings.text('Model auto', '模型自动');
+              strings.text('Model auto', '妯″瀷鑷姩');
     final reasoningLabel = _reasoningEffortLabel(context, selectedModel);
     final permissionLabel = _permissionLabel(context, selectedMode);
-    final composerLabel = hasActiveTurn || compactWorkspace
+    final composerLabel = compactWorkspace
         ? null
         : strings.text('Prompt', '提示词');
-    final composerHint = hasActiveTurn
-        ? strings.text(
-            'Provide steering or clarifying instructions',
-            '提供引导或澄清指令',
-          )
-        : strings.text('Tell Codex what to do next', '告诉 Codex 下一步做什么');
+    final composerHint = strings.text(
+      'Tell Codex what to do next',
+      '告诉 Codex 下一步做什么',
+    );
     final modelControl = _InlineComposerMenu<String>(
       label: modelLabel,
-      compact: compactWorkspace,
+      compact: true,
       enabled: !loadingModels && !submitting && models.isNotEmpty,
-      tooltip: strings.text('Select model', '选择模型'),
+      tooltip: strings.text('Select model', '閫夋嫨妯″瀷'),
       items: models
           .map(
             (model) => PopupMenuItem<String>(
               value: model.id,
               child: SizedBox(
-                width: compactWorkspace ? 220 : 260,
+                width: 220,
                 child: Text(model.displayName, overflow: TextOverflow.ellipsis),
               ),
             ),
@@ -2300,21 +2468,13 @@ class _ComposerDock extends StatelessWidget {
         'Showing the selected model default reasoning effort.',
         '当前显示所选模型的默认推理强度。',
       ),
-      child: _InlineComposerValue(
-        label: reasoningLabel,
-        compact: compactWorkspace,
-      ),
+      child: _InlineComposerValue(label: reasoningLabel, compact: true),
     );
     final permissionControl = _InlineComposerMenu<CodexComposerMode>(
       label: permissionLabel,
-      compact: compactWorkspace,
-      enabled: !hasActiveTurn && !submitting,
-      tooltip: hasActiveTurn
-          ? strings.text(
-              'Permission changes apply when the next turn starts.',
-              '权限调整会在下一轮开始时生效。',
-            )
-          : strings.text('Select permissions', '选择权限'),
+      compact: true,
+      enabled: !submitting,
+      tooltip: strings.text('Select permissions', '閫夋嫨鏉冮檺'),
       items: CodexComposerMode.values
           .map(
             (mode) => PopupMenuItem<CodexComposerMode>(
@@ -2346,12 +2506,9 @@ class _ComposerDock extends StatelessWidget {
                 unawaited(onPickAttachments());
               },
         visualDensity: VisualDensity.compact,
-        splashRadius: compactWorkspace ? 16 : 18,
-        iconSize: compactWorkspace ? 16 : 18,
-        constraints: BoxConstraints.tightFor(
-          width: compactWorkspace ? 32 : 36,
-          height: compactWorkspace ? 32 : 36,
-        ),
+        splashRadius: 16,
+        iconSize: 16,
+        constraints: BoxConstraints.tightFor(width: 32, height: 32),
         icon: const Icon(Icons.attach_file_rounded),
       ),
     );
@@ -2361,11 +2518,7 @@ class _ComposerDock extends StatelessWidget {
         final interruptAction =
             hasActiveTurn && value.text.trim().isEmpty && attachments.isEmpty;
         return Tooltip(
-          message: interruptAction
-              ? strings.text('Interrupt current turn', '中断当前轮次')
-              : hasActiveTurn
-              ? strings.text('Send steering message', '发送引导消息')
-              : strings.text('Send prompt', '发送提示词'),
+          message: strings.text('Send prompt', '鍙戦€佹彁绀鸿瘝'),
           child: IconButton.filled(
             onPressed: submitting || runtimeLoading
                 ? null
@@ -2373,22 +2526,15 @@ class _ComposerDock extends StatelessWidget {
                     unawaited(interruptAction ? onInterrupt() : onSubmit());
                   },
             style: IconButton.styleFrom(
-              backgroundColor: interruptAction
-                  ? theme.colorScheme.error
-                  : theme.colorScheme.primary,
-              foregroundColor: interruptAction
-                  ? theme.colorScheme.onError
-                  : theme.colorScheme.onPrimary,
+              backgroundColor: theme.colorScheme.primary,
+              foregroundColor: theme.colorScheme.onPrimary,
               disabledBackgroundColor: theme.colorScheme.primary.withValues(
                 alpha: 0.28,
               ),
               disabledForegroundColor: theme.colorScheme.onPrimary.withValues(
                 alpha: 0.55,
               ),
-              minimumSize: Size(
-                compactWorkspace ? 32 : 34,
-                compactWorkspace ? 32 : 34,
-              ),
+              minimumSize: Size(32, 32),
             ),
             icon: submitting
                 ? const SizedBox(
@@ -2396,12 +2542,7 @@ class _ComposerDock extends StatelessWidget {
                     height: 14,
                     child: CircularProgressIndicator(strokeWidth: 2),
                   )
-                : Icon(
-                    interruptAction
-                        ? Icons.stop_rounded
-                        : Icons.arrow_upward_rounded,
-                    size: compactWorkspace ? 16 : 18,
-                  ),
+                : Icon(Icons.arrow_upward_rounded, size: 16),
           ),
         );
       },
@@ -2438,32 +2579,46 @@ class _ComposerDock extends StatelessWidget {
               PasteTextIntent: _ComposerPasteTextAction(
                 onPaste: onPasteFromClipboard,
               ),
+              SubmitComposerIntent: CallbackAction<SubmitComposerIntent>(
+                onInvoke: (intent) {
+                  if (!submitting && !runtimeLoading) {
+                    unawaited(onSubmit());
+                  }
+                  return null;
+                },
+              ),
             },
-            child: TextField(
-              controller: composerController,
-              minLines: hasActiveTurn
-                  ? (compactWorkspace ? 2 : 6)
-                  : (compactWorkspace ? 1 : 2),
-              maxLines: hasActiveTurn
-                  ? (compactWorkspace ? 6 : 12)
-                  : (compactWorkspace ? 4 : 6),
-              enabled: !submitting && !runtimeLoading,
-              decoration: InputDecoration(
-                isDense: compactWorkspace,
-                hintText: composerHint,
-                border: InputBorder.none,
-                enabledBorder: InputBorder.none,
-                focusedBorder: InputBorder.none,
-                disabledBorder: InputBorder.none,
-                filled: false,
-                fillColor: Colors.transparent,
-                focusColor: Colors.transparent,
-                hoverColor: Colors.transparent,
-                contentPadding: EdgeInsets.fromLTRB(
-                  compactWorkspace ? 12 : 16,
-                  compactWorkspace ? 6 : 12,
-                  compactWorkspace ? 12 : 16,
-                  compactWorkspace ? 6 : 12,
+            child: Shortcuts(
+              shortcuts: const <ShortcutActivator, Intent>{
+                SingleActivator(LogicalKeyboardKey.enter):
+                    SubmitComposerIntent(),
+              },
+              child: ConstrainedBox(
+                constraints: BoxConstraints(minHeight: composerInputMinHeight),
+                child: TextField(
+                  controller: composerController,
+                  minLines: composerMinLines,
+                  maxLines: composerMaxLines,
+                  textAlignVertical: TextAlignVertical.top,
+                  enabled: !submitting && !runtimeLoading,
+                  decoration: InputDecoration(
+                    isDense: compactWorkspace && !comfortableCompactComposer,
+                    hintText: composerHint,
+                    border: InputBorder.none,
+                    enabledBorder: InputBorder.none,
+                    focusedBorder: InputBorder.none,
+                    disabledBorder: InputBorder.none,
+                    filled: false,
+                    fillColor: Colors.transparent,
+                    focusColor: Colors.transparent,
+                    hoverColor: Colors.transparent,
+                    contentPadding: EdgeInsets.fromLTRB(
+                      composerHorizontalPadding,
+                      composerVerticalPadding,
+                      composerHorizontalPadding,
+                      composerVerticalPadding,
+                    ),
+                  ),
                 ),
               ),
             ),
@@ -2491,12 +2646,7 @@ class _ComposerDock extends StatelessWidget {
             ),
           Divider(height: 1, thickness: 1, color: borderColor(theme)),
           Padding(
-            padding: EdgeInsets.fromLTRB(
-              compactWorkspace ? 8 : 10,
-              compactWorkspace ? 6 : 6,
-              compactWorkspace ? 8 : 10,
-              compactWorkspace ? 6 : 6,
-            ),
+            padding: EdgeInsets.fromLTRB(8, 6, 8, 6),
             child: LayoutBuilder(
               builder: (context, constraints) {
                 final inlineControls = [
@@ -2505,8 +2655,7 @@ class _ComposerDock extends StatelessWidget {
                   reasoningControl,
                   permissionControl,
                 ];
-                if (compactWorkspace ||
-                    constraints.maxWidth >= (compactWorkspace ? 500 : 600)) {
+                if (compactWorkspace || constraints.maxWidth >= 500) {
                   return Row(
                     children: [
                       Expanded(
@@ -2519,23 +2668,22 @@ class _ComposerDock extends StatelessWidget {
                                 index < inlineControls.length;
                                 index += 1
                               ) ...[
-                                if (index > 0)
-                                  SizedBox(width: compactWorkspace ? 8 : 10),
+                                if (index > 0) const SizedBox(width: 8),
                                 inlineControls[index],
                               ],
                             ],
                           ),
                         ),
                       ),
-                      SizedBox(width: compactWorkspace ? 4 : 6),
+                      const SizedBox(width: 4),
                       submitButton,
                     ],
                   );
                 }
 
                 return Wrap(
-                  spacing: compactWorkspace ? 8 : 10,
-                  runSpacing: compactWorkspace ? 6 : 8,
+                  spacing: 8,
+                  runSpacing: 6,
                   crossAxisAlignment: WrapCrossAlignment.center,
                   children: [...inlineControls, submitButton],
                 );
@@ -2554,7 +2702,12 @@ class _ComposerDock extends StatelessWidget {
         child: SafeArea(
           top: false,
           child: Padding(
-            padding: const EdgeInsets.fromLTRB(10, 6, 10, 8),
+            padding: EdgeInsets.fromLTRB(
+              comfortableCompactComposer ? 12 : 10,
+              comfortableCompactComposer ? 10 : 6,
+              comfortableCompactComposer ? 12 : 10,
+              comfortableCompactComposer ? 12 : 8,
+            ),
             child: composerField,
           ),
         ),
@@ -2577,19 +2730,7 @@ class _ComposerDock extends StatelessWidget {
           child: Column(
             mainAxisSize: MainAxisSize.min,
             crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              if (!compactWorkspace && hasActiveTurn)
-                Text(
-                  helperText,
-                  style: theme.textTheme.bodyMedium?.copyWith(
-                    fontSize: compactWorkspace ? 12 : null,
-                    color: secondaryTextColor(theme),
-                  ),
-                ),
-              if (!compactWorkspace && hasActiveTurn)
-                SizedBox(height: compactWorkspace ? 6 : 12),
-              composerField,
-            ],
+            children: [composerField],
           ),
         ),
       ),
@@ -2710,13 +2851,13 @@ class _PendingRequestDialogState extends State<_PendingRequestDialog> {
           onPressed: () {
             Navigator.of(context).pop();
           },
-          child: Text(strings.text('Close', '关闭')),
+          child: Text(strings.text('Close', '鍏抽棴')),
         ),
         FilledButton(
           onPressed: () {
             Navigator.of(context).pop(_collectSubmission());
           },
-          child: Text(strings.text('Submit', '提交')),
+          child: Text(strings.text('Submit', '鎻愪氦')),
         ),
       ],
     );
@@ -2771,7 +2912,7 @@ class _PendingRequestDialogState extends State<_PendingRequestDialog> {
             TextField(
               controller: controller,
               decoration: InputDecoration(
-                labelText: context.strings.text('Other', '其他'),
+                labelText: context.strings.text('Other', '鍏朵粬'),
                 hintText: context.strings.text(
                   'Enter a custom answer',
                   '输入自定义答案',
@@ -3010,6 +3151,10 @@ class _ComposerPasteTextAction extends Action<PasteTextIntent> {
   }
 }
 
+class SubmitComposerIntent extends Intent {
+  const SubmitComposerIntent();
+}
+
 class _ComposerAttachmentChip extends StatelessWidget {
   const _ComposerAttachmentChip({
     required this.attachment,
@@ -3024,6 +3169,10 @@ class _ComposerAttachmentChip extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
+    final isLocalImage = attachment.type == CodexInputPartType.localImage;
+    final normalizedPath = attachment.path?.trim() ?? '';
+    final imageFile = normalizedPath.isEmpty ? null : File(normalizedPath);
+    final previewableImage = isLocalImage && (imageFile?.existsSync() ?? false);
     final label = attachment.displayLabel.trim().isEmpty
         ? attachment.previewText
         : attachment.displayLabel.trim();
@@ -3042,24 +3191,46 @@ class _ComposerAttachmentChip extends StatelessWidget {
       child: Row(
         mainAxisSize: MainAxisSize.min,
         children: [
-          Icon(
-            attachment.type == CodexInputPartType.localImage
-                ? Icons.image_outlined
-                : Icons.description_outlined,
-            size: compact ? 14 : 16,
-            color: secondaryTextColor(theme),
-          ),
-          SizedBox(width: compact ? 6 : 8),
-          ConstrainedBox(
-            constraints: BoxConstraints(maxWidth: compact ? 180 : 240),
-            child: Text(
-              label,
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-              style: theme.textTheme.labelMedium,
+          if (isLocalImage) ...[
+            Tooltip(
+              message: context.strings.text('Preview', '预览'),
+              child: Material(
+                color: Colors.transparent,
+                child: InkWell(
+                  onTap: previewableImage
+                      ? () {
+                          unawaited(_showImagePreview(context, imageFile!));
+                        }
+                      : null,
+                  borderRadius: BorderRadius.circular(compact ? 8 : 10),
+                  child: ClipRRect(
+                    borderRadius: BorderRadius.circular(compact ? 8 : 10),
+                    child: _ComposerImageThumbnail(
+                      path: attachment.path,
+                      compact: compact,
+                    ),
+                  ),
+                ),
+              ),
             ),
-          ),
-          SizedBox(width: compact ? 2 : 4),
+          ] else ...[
+            Icon(
+              Icons.description_outlined,
+              size: compact ? 14 : 16,
+              color: secondaryTextColor(theme),
+            ),
+            SizedBox(width: compact ? 6 : 8),
+            ConstrainedBox(
+              constraints: BoxConstraints(maxWidth: compact ? 180 : 240),
+              child: Text(
+                label,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: theme.textTheme.labelMedium,
+              ),
+            ),
+          ],
+          SizedBox(width: compact ? 6 : 8),
           InkWell(
             onTap: onRemoved,
             borderRadius: BorderRadius.circular(999),
@@ -3069,6 +3240,149 @@ class _ComposerAttachmentChip extends StatelessWidget {
             ),
           ),
         ],
+      ),
+    );
+  }
+
+  Future<void> _showImagePreview(BuildContext context, File file) async {
+    await showDialog<void>(
+      context: context,
+      builder: (dialogContext) => _ComposerImagePreviewDialog(file: file),
+    );
+  }
+}
+
+class _ComposerImageThumbnail extends StatelessWidget {
+  const _ComposerImageThumbnail({required this.path, required this.compact});
+
+  final String? path;
+  final bool compact;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final dimension = compact ? 30.0 : 36.0;
+    final normalizedPath = path?.trim() ?? '';
+    final file = normalizedPath.isEmpty ? null : File(normalizedPath);
+    final exists = file?.existsSync() ?? false;
+    if (!exists) {
+      return Container(
+        width: dimension,
+        height: dimension,
+        color: mutedPanelBackgroundColor(theme),
+        alignment: Alignment.center,
+        child: Icon(
+          Icons.image_outlined,
+          size: compact ? 14 : 16,
+          color: secondaryTextColor(theme),
+        ),
+      );
+    }
+
+    return Image.file(
+      file!,
+      width: dimension,
+      height: dimension,
+      fit: BoxFit.cover,
+      errorBuilder: (context, error, stackTrace) {
+        return Container(
+          width: dimension,
+          height: dimension,
+          color: mutedPanelBackgroundColor(theme),
+          alignment: Alignment.center,
+          child: Icon(
+            Icons.broken_image_outlined,
+            size: compact ? 14 : 16,
+            color: secondaryTextColor(theme),
+          ),
+        );
+      },
+    );
+  }
+}
+
+class _ComposerImagePreviewDialog extends StatelessWidget {
+  const _ComposerImagePreviewDialog({required this.file});
+
+  final File file;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return Dialog(
+      backgroundColor: Colors.transparent,
+      insetPadding: const EdgeInsets.all(24),
+      child: DecoratedBox(
+        decoration: BoxDecoration(
+          color: panelBackgroundColor(theme),
+          borderRadius: BorderRadius.circular(20),
+          border: Border.all(color: borderColor(theme)),
+        ),
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 1080, maxHeight: 760),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Padding(
+                padding: const EdgeInsets.fromLTRB(12, 10, 8, 0),
+                child: Row(
+                  children: [
+                    Text(
+                      context.strings.text('Preview', '预览'),
+                      style: theme.textTheme.titleSmall?.copyWith(
+                        fontWeight: FontWeight.w700,
+                      ),
+                    ),
+                    const Spacer(),
+                    IconButton(
+                      tooltip: context.strings.text('Close preview', '关闭预览'),
+                      onPressed: () => Navigator.of(context).pop(),
+                      icon: const Icon(Icons.close),
+                    ),
+                  ],
+                ),
+              ),
+              Flexible(
+                child: Padding(
+                  padding: const EdgeInsets.fromLTRB(12, 0, 12, 12),
+                  child: ClipRRect(
+                    borderRadius: BorderRadius.circular(16),
+                    child: DecoratedBox(
+                      decoration: BoxDecoration(
+                        color: mutedPanelBackgroundColor(theme),
+                        border: Border.all(color: borderColor(theme)),
+                      ),
+                      child: InteractiveViewer(
+                        minScale: 1,
+                        maxScale: 5,
+                        child: Center(
+                          child: Image.file(
+                            file,
+                            fit: BoxFit.contain,
+                            errorBuilder: (context, error, stackTrace) {
+                              return SizedBox(
+                                width: 220,
+                                height: 180,
+                                child: Center(
+                                  child: Icon(
+                                    Icons.broken_image_outlined,
+                                    size: 28,
+                                    color: secondaryTextColor(theme),
+                                  ),
+                                ),
+                              );
+                            },
+                          ),
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
       ),
     );
   }
@@ -3262,7 +3576,7 @@ String _humanize(BuildContext context, String value) {
 String _providerLabel(BuildContext context, String? value) {
   final normalized = value?.trim();
   if (normalized == null || normalized.isEmpty) {
-    return context.strings.text('Unknown provider', '未知 Provider');
+    return context.strings.text('Unknown provider', '鏈煡 Provider');
   }
   return normalized;
 }
@@ -3283,11 +3597,11 @@ String _modeLabel(BuildContext context, CodexComposerMode mode) {
 
 String _permissionLabel(BuildContext context, CodexComposerMode mode) {
   return switch (mode) {
-    CodexComposerMode.chat => context.strings.text('Read only', '只读'),
+    CodexComposerMode.chat => context.strings.text('Read only', '鍙'),
     CodexComposerMode.agent => context.strings.text('Edit project', '项目内修改'),
     CodexComposerMode.agentFullAccess => context.strings.text(
       'Full access',
-      '完全访问',
+      '瀹屽叏璁块棶',
     ),
   };
 }
@@ -3307,10 +3621,10 @@ String _reasoningEffortLabel(
     'low' => context.strings.text('Low', '低'),
     'medium' => context.strings.text('Medium', '中'),
     'high' => context.strings.text('High', '高'),
-    'very_high' || 'very-high' => context.strings.text('Very high', '超高'),
+    'very_high' || 'very-high' => context.strings.text('Very high', '瓒呴珮'),
     _ when rawValue.isNotEmpty => context.strings.humanizeMachineLabel(
       rawValue,
     ),
-    _ => context.strings.text('Auto', '自动'),
+    _ => context.strings.text('Auto', '鑷姩'),
   };
 }

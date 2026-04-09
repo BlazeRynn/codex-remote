@@ -50,10 +50,11 @@ String renderUserMessageContent(Object? value) {
   }
   if (value is Map) {
     return _normalizeUserText(
-      readString(
-        value.cast<String, dynamic>(),
-        const ['text', 'message', 'content'],
-      ),
+      readString(value.cast<String, dynamic>(), const [
+        'text',
+        'message',
+        'content',
+      ]),
     );
   }
   if (value is String) {
@@ -61,6 +62,8 @@ String renderUserMessageContent(Object? value) {
   }
   return '';
 }
+
+String normalizeUserMessageText(String value) => _normalizeUserText(value);
 
 UserMessagePart? _parseUserInputPart(Map<String, dynamic> item) {
   switch (readString(item, const ['type'])) {
@@ -82,7 +85,7 @@ UserMessagePart? _parseUserInputPart(Map<String, dynamic> item) {
       final path = readString(item, const ['path']);
       return UserMessagePart(
         type: UserMessagePartType.localImage,
-        text: path.isEmpty ? '[local image]' : '[local image] $path',
+        text: '[local image]',
         path: path.isEmpty ? null : path,
       );
     case 'skill':
@@ -118,17 +121,18 @@ String _normalizeUserText(String value) {
   }
   const ideContextHeader = 'Context from my IDE setup:';
   const requestMarker = 'My request for Codex:';
+  final markerIndex = text.indexOf(requestMarker);
+  if (markerIndex >= 0) {
+    final requestText = text
+        .substring(markerIndex + requestMarker.length)
+        .trim();
+    return requestText.isEmpty ? text : requestText;
+  }
+
   if (!text.startsWith(ideContextHeader)) {
     return text;
   }
-
-  final markerIndex = text.indexOf(requestMarker);
-  if (markerIndex < 0) {
-    return text;
-  }
-
-  final requestText = text.substring(markerIndex + requestMarker.length).trim();
-  return requestText.isEmpty ? text : requestText;
+  return text;
 }
 
 String _renderMentionText({required String name, required String path}) {

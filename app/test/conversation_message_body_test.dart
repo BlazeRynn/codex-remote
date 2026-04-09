@@ -141,6 +141,33 @@ void main() {
     expect(find.text('My request for Codex:'), findsNothing);
   });
 
+  testWidgets('strips IDE context wrapper from user body fallback', (
+    tester,
+  ) async {
+    final item = CodexThreadItem(
+      id: 'user-ide-context-body-1',
+      type: 'user.message',
+      title: 'User message',
+      body:
+          'Context from my IDE setup:\n\nOpen tabs:\n- README.md: README.md\n\nMy request for Codex:\n把这个实现了',
+      status: 'completed',
+      actor: 'user',
+      raw: const {},
+    );
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(body: ConversationMessageBody(item: item)),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.text('把这个实现了'), findsOneWidget);
+    expect(find.text('Context from my IDE setup:'), findsNothing);
+    expect(find.text('My request for Codex:'), findsNothing);
+    expect(find.textContaining('Open tabs:'), findsNothing);
+  });
+
   testWidgets('renders assistant gif items as previewable images', (
     tester,
   ) async {
@@ -281,6 +308,44 @@ void main() {
     expect(find.text('from lib/old_name.dart'), findsOneWidget);
   });
 
+  testWidgets('renders structured plan items as a task panel', (tester) async {
+    final item = CodexThreadItem(
+      id: 'plan-1',
+      type: 'plan',
+      title: 'Plan',
+      body:
+          '1. Inspect the workspace\n2. Implement the fix\n3. Run verification',
+      status: 'in_progress',
+      actor: 'assistant',
+      raw: const {
+        'steps': [
+          {'step': 'Inspect the workspace', 'status': 'completed'},
+          {'step': 'Implement the fix', 'status': 'in_progress'},
+          {'step': 'Run verification', 'status': 'pending'},
+        ],
+      },
+    );
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(body: ConversationMessageBody(item: item)),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.byKey(const ValueKey('plan-card:plan-1')), findsOneWidget);
+    expect(find.text('1 out of 3 tasks completed'), findsOneWidget);
+    expect(find.text('1. Inspect the workspace'), findsOneWidget);
+    expect(find.text('2. Implement the fix'), findsOneWidget);
+    expect(find.text('3. Run verification'), findsOneWidget);
+    expect(
+      find.text(
+        '1. Inspect the workspace\n2. Implement the fix\n3. Run verification',
+      ),
+      findsNothing,
+    );
+  });
+
   testWidgets('shows the reasoning status only while thinking', (tester) async {
     final item = CodexThreadItem(
       id: 'reasoning-1',
@@ -299,6 +364,10 @@ void main() {
     );
 
     expect(find.text('Thinking'), findsOneWidget);
+    expect(
+      find.byKey(const ValueKey('reasoning-thinking-dots')),
+      findsOneWidget,
+    );
     expect(find.text('Inspecting the workspace.'), findsOneWidget);
 
     await tester.pumpWidget(
@@ -319,7 +388,8 @@ void main() {
     );
     await tester.pump();
 
-    expect(find.text('Thinking'), findsNothing);
+    expect(find.text('Thought complete'), findsOneWidget);
+    expect(find.byKey(const ValueKey('reasoning-thinking-dots')), findsNothing);
     expect(find.text('Inspecting the workspace.'), findsOneWidget);
   });
 
@@ -364,56 +434,65 @@ void main() {
       await tester.pump();
 
       expect(find.text('Thinking'), findsOneWidget);
+      expect(
+        find.byKey(const ValueKey('reasoning-thinking-dots')),
+        findsOneWidget,
+      );
       expect(find.text('Here is the next reply.'), findsOneWidget);
     },
   );
 
-  testWidgets('hides the reasoning status once a later final answer exists', (
-    tester,
-  ) async {
-    final item = CodexThreadItem(
-      id: 'assistant-group-reasoning-final',
-      type: 'assistant.group',
-      title: 'Codex',
-      body: '',
-      status: 'in_progress',
-      actor: 'assistant',
-      raw: {
-        'bubbleItems': [
-          CodexThreadItem(
-            id: 'reasoning-active',
-            type: 'reasoning',
-            title: 'Reasoning',
-            body: '',
-            status: 'in_progress',
-            actor: 'assistant',
-          ),
-          CodexThreadItem(
-            id: 'assistant-final',
-            type: 'agent.message',
-            title: 'Assistant',
-            body: 'Final answer is ready.',
-            status: 'completed',
-            actor: 'assistant',
-            raw: const {'phase': 'final_answer'},
-          ),
-        ],
-      },
-    );
+  testWidgets(
+    'shows a completed reasoning status once a later final answer exists',
+    (tester) async {
+      final item = CodexThreadItem(
+        id: 'assistant-group-reasoning-final',
+        type: 'assistant.group',
+        title: 'Codex',
+        body: '',
+        status: 'in_progress',
+        actor: 'assistant',
+        raw: {
+          'bubbleItems': [
+            CodexThreadItem(
+              id: 'reasoning-active',
+              type: 'reasoning',
+              title: 'Reasoning',
+              body: '',
+              status: 'in_progress',
+              actor: 'assistant',
+            ),
+            CodexThreadItem(
+              id: 'assistant-final',
+              type: 'agent.message',
+              title: 'Assistant',
+              body: 'Final answer is ready.',
+              status: 'completed',
+              actor: 'assistant',
+              raw: const {'phase': 'final_answer'},
+            ),
+          ],
+        },
+      );
 
-    await tester.pumpWidget(
-      MaterialApp(
-        home: Scaffold(body: ConversationMessageBody(item: item)),
-      ),
-    );
-    await tester.pump();
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(body: ConversationMessageBody(item: item)),
+        ),
+      );
+      await tester.pump();
 
-    expect(find.text('Thinking'), findsNothing);
-    expect(find.text('Final answer is ready.'), findsOneWidget);
-  });
+      expect(find.text('Thought complete'), findsOneWidget);
+      expect(
+        find.byKey(const ValueKey('reasoning-thinking-dots')),
+        findsNothing,
+      );
+      expect(find.text('Final answer is ready.'), findsOneWidget);
+    },
+  );
 
   testWidgets(
-    'keeps assistant group height stable when reasoning status becomes hidden',
+    'keeps assistant group height stable when reasoning status becomes completed',
     (tester) async {
       final key = GlobalKey();
 
@@ -499,7 +578,7 @@ void main() {
       await tester.pump();
       final afterHeight = tester.getSize(find.byKey(key)).height;
 
-      expect(find.text('Thinking'), findsNothing);
+      expect(find.text('Thought complete'), findsOneWidget);
       expect(afterHeight, beforeHeight);
     },
   );
@@ -637,7 +716,10 @@ void main() {
     await tester.pump();
 
     expect(tester.takeException(), isNull);
-    expect(find.textContaining('Improve mobile composer layout'), findsOneWidget);
+    expect(
+      find.textContaining('Improve mobile composer layout'),
+      findsOneWidget,
+    );
     expect(find.text('```text'), findsNothing);
     expect(find.text('```'), findsNothing);
   });

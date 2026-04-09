@@ -19,6 +19,9 @@ class ThreadRealtimeAccumulator {
   final Map<String, int> _itemOrdinals = {};
   final Map<String, String> _implicitStreamingItemIds = {};
   int _nextOrdinal = 0;
+  int _revision = 0;
+
+  int get revision => _revision;
 
   List<CodexThreadItem> get items {
     final snapshotIds = _snapshotItems.map((item) => item.id).toSet();
@@ -87,6 +90,7 @@ class ThreadRealtimeAccumulator {
     }
     _snapshotItems = List.unmodifiable(mergedItems);
     _reconcileOverlay();
+    _revision += 1;
   }
 
   CodexThreadItem _mergeSnapshotItemMetadata(CodexThreadItem item) {
@@ -303,6 +307,7 @@ class ThreadRealtimeAccumulator {
       () => _stableOrdinalFor(next, overlayKey: next.id),
     );
     _reconcileOverlay();
+    _revision += 1;
     return true;
   }
 

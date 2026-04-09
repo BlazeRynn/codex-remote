@@ -1,3 +1,5 @@
+import 'package:flutter/foundation.dart';
+
 import '../models/codex_thread_item.dart';
 
 enum ThreadMessageEntryKind {
@@ -8,12 +10,16 @@ enum ThreadMessageEntryKind {
 }
 
 class ThreadMessageListProjection {
-  ThreadMessageListProjection._({
+  const ThreadMessageListProjection._({
     required this.entries,
     required this.legacyItems,
     required this.tailSignature,
     required this.tailBodyLength,
   });
+
+  factory ThreadMessageListProjection.empty() {
+    return const _EmptyThreadMessageListProjection();
+  }
 
   final List<ThreadMessageListEntry> entries;
   final List<CodexThreadItem> legacyItems;
@@ -22,6 +28,46 @@ class ThreadMessageListProjection {
 
   CodexThreadItem? get tailItem =>
       legacyItems.isEmpty ? null : legacyItems.last;
+
+  Map<String, dynamic> toTransferMap() {
+    return {
+      'entries': entries
+          .map((entry) => entry.toTransferMap())
+          .toList(growable: false),
+      'legacyItems': legacyItems
+          .map((item) => item.toTransferMap())
+          .toList(growable: false),
+      'tailSignature': tailSignature,
+      'tailBodyLength': tailBodyLength,
+    };
+  }
+
+  factory ThreadMessageListProjection.fromTransferMap(
+    Map<String, dynamic> map,
+  ) {
+    return ThreadMessageListProjection._(
+      entries: List<ThreadMessageListEntry>.unmodifiable(
+        (map['entries'] as List? ?? const []).whereType<Map>().map(
+          (entry) => ThreadMessageListEntry.fromTransferMap(
+            entry.map((key, value) => MapEntry(key.toString(), value)),
+          ),
+        ),
+      ),
+      legacyItems: List<CodexThreadItem>.unmodifiable(
+        (map['legacyItems'] as List? ?? const []).whereType<Map>().map(
+          (item) => CodexThreadItem.fromTransferMap(
+            item.map((key, value) => MapEntry(key.toString(), value)),
+          ),
+        ),
+      ),
+      tailSignature: map['tailSignature']?.toString() ?? 'empty',
+      tailBodyLength: switch (map['tailBodyLength']) {
+        final int value => value,
+        final num value => value.toInt(),
+        _ => 0,
+      },
+    );
+  }
 }
 
 class ThreadMessageListEntry {
@@ -63,6 +109,59 @@ class ThreadMessageListEntry {
     }
     return items.last;
   }
+
+  Map<String, dynamic> toTransferMap() {
+    return {
+      'key': key,
+      'kind': kind.name,
+      'items': items
+          .map((item) => item.toTransferMap())
+          .toList(growable: false),
+      'sourceItems': sourceItems
+          .map((item) => item.toTransferMap())
+          .toList(growable: false),
+      'item': item?.toTransferMap(),
+      'actor': actor,
+      'status': status,
+    };
+  }
+
+  factory ThreadMessageListEntry.fromTransferMap(Map<String, dynamic> map) {
+    final kind = _threadMessageEntryKindFromName(map['kind']?.toString());
+    final itemMap = map['item'];
+    final items = (map['items'] as List? ?? const [])
+        .whereType<Map>()
+        .map(
+          (entry) => CodexThreadItem.fromTransferMap(
+            entry.map((key, value) => MapEntry(key.toString(), value)),
+          ),
+        )
+        .toList(growable: false);
+    final sourceItems = (map['sourceItems'] as List? ?? const [])
+        .whereType<Map>()
+        .map(
+          (entry) => CodexThreadItem.fromTransferMap(
+            entry.map((key, value) => MapEntry(key.toString(), value)),
+          ),
+        )
+        .toList(growable: false);
+    if (kind == ThreadMessageEntryKind.bubble) {
+      return ThreadMessageListEntry.bubble(
+        key: map['key']?.toString() ?? '',
+        items: items,
+        sourceItems: sourceItems,
+        actor: map['actor']?.toString() ?? 'assistant',
+        status: map['status']?.toString() ?? 'unknown',
+      );
+    }
+    return ThreadMessageListEntry.item(
+      key: map['key']?.toString() ?? '',
+      kind: kind,
+      item: CodexThreadItem.fromTransferMap(
+        (itemMap as Map).map((key, value) => MapEntry(key.toString(), value)),
+      ),
+    );
+  }
 }
 
 ThreadMessageListProjection projectThreadMessageList(
@@ -93,6 +192,64 @@ ThreadMessageListProjection projectThreadMessageList(
           ].join(':'),
     tailBodyLength: tailItem?.body.length ?? 0,
   );
+}
+
+Future<ThreadMessageListProjection> projectThreadMessageListAsync(
+  List<CodexThreadItem> items,
+) async {
+  if (!shouldProjectThreadMessageListInBackground(items)) {
+    return projectThreadMessageList(items);
+  }
+
+  final payload = items
+      .map((item) => item.toTransferMap())
+      .toList(growable: false);
+  final projectionMap = await compute(
+    _projectThreadMessageListTransfer,
+    payload,
+  );
+  return ThreadMessageListProjection.fromTransferMap(projectionMap);
+}
+
+bool shouldProjectThreadMessageListInBackground(List<CodexThreadItem> items) {
+  if (items.length >= 80) {
+    return true;
+  }
+
+  var textLength = 0;
+  for (final item in items) {
+    textLength += item.title.length + item.body.length;
+    if (textLength >= 16000) {
+      return true;
+    }
+  }
+  return false;
+}
+
+Map<String, dynamic> _projectThreadMessageListTransfer(
+  List<Map<String, dynamic>> items,
+) {
+  final projection = projectThreadMessageList(
+    items.map(CodexThreadItem.fromTransferMap).toList(growable: false),
+  );
+  return projection.toTransferMap();
+}
+
+ThreadMessageEntryKind _threadMessageEntryKindFromName(String? value) {
+  return ThreadMessageEntryKind.values.firstWhere(
+    (kind) => kind.name == value,
+    orElse: () => ThreadMessageEntryKind.bubble,
+  );
+}
+
+class _EmptyThreadMessageListProjection extends ThreadMessageListProjection {
+  const _EmptyThreadMessageListProjection()
+    : super._(
+        entries: const [],
+        legacyItems: const [],
+        tailSignature: 'empty',
+        tailBodyLength: 0,
+      );
 }
 
 List<ThreadMessageListEntry> _buildThreadMessageEntries(

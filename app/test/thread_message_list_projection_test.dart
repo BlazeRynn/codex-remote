@@ -163,6 +163,70 @@ void main() {
       expect(projection.legacyItems.single.type, 'command.execution');
     },
   );
+
+  test(
+    'background projection matches sync projection for large conversations',
+    () async {
+      final items = <CodexThreadItem>[];
+      for (var index = 0; index < 30; index += 1) {
+        final turnId = 'turn-$index';
+        items.add(
+          _item(
+            id: 'user-$index',
+            actor: 'user',
+            type: 'user.message',
+            body: 'question $index',
+            raw: {'turnId': turnId},
+          ),
+        );
+        items.add(
+          _item(
+            id: 'agent-commentary-$index',
+            actor: 'assistant',
+            type: 'agent.message',
+            body: 'working on step $index',
+            raw: {'turnId': turnId, 'phase': 'commentary'},
+          ),
+        );
+        items.add(
+          _item(
+            id: 'command-$index',
+            actor: 'assistant',
+            type: 'command.execution',
+            body: 'rg item $index',
+            raw: {'turnId': turnId},
+          ),
+        );
+        items.add(
+          _item(
+            id: 'agent-streaming-$index',
+            actor: 'assistant',
+            type: 'agent.message',
+            body: 'partial answer ' * 12,
+            raw: {'turnId': turnId, 'phase': 'streaming'},
+          ),
+        );
+      }
+
+      final syncProjection = projectThreadMessageList(items);
+      final asyncProjection = await projectThreadMessageListAsync(items);
+
+      expect(asyncProjection.tailSignature, syncProjection.tailSignature);
+      expect(asyncProjection.tailBodyLength, syncProjection.tailBodyLength);
+      expect(asyncProjection.entries, hasLength(syncProjection.entries.length));
+      expect(
+        asyncProjection.entries.map((entry) => entry.key).toList(),
+        syncProjection.entries.map((entry) => entry.key).toList(),
+      );
+
+      final groupedItem = asyncProjection.legacyItems.firstWhere(
+        (item) => item.raw['bubbleItems'] is List,
+      );
+      final bubbleItems = groupedItem.raw['bubbleItems'] as List;
+      expect(bubbleItems, isNotEmpty);
+      expect(bubbleItems.every((item) => item is CodexThreadItem), isTrue);
+    },
+  );
 }
 
 CodexThreadItem _item({

@@ -14,7 +14,7 @@ void main() {
         id: 'user-1',
         type: 'user.message',
         title: 'User message',
-        body: '不要显示已完成',
+        body: 'hide completed badge',
         status: 'completed',
         actor: 'user',
         createdAt: DateTime.now().toUtc().subtract(const Duration(minutes: 1)),
@@ -24,7 +24,6 @@ void main() {
 
     await tester.pumpWidget(
       _buildTestApp(
-        locale: const Locale('zh'),
         child: ThreadMessageList(
           projection: projection,
           loading: false,
@@ -37,6 +36,7 @@ void main() {
           liveStateLabel: '',
           liveMessage: '',
           hasActiveTurn: false,
+          stickToBottom: false,
           showScrollToBottomButton: false,
           onScrollToBottom: () {},
         ),
@@ -44,9 +44,9 @@ void main() {
     );
     await tester.pumpAndSettle();
 
-    expect(find.text('你'), findsOneWidget);
-    expect(find.text('不要显示已完成'), findsOneWidget);
-    expect(find.text('已完成'), findsNothing);
+    expect(find.text('You'), findsOneWidget);
+    expect(find.text('hide completed badge'), findsOneWidget);
+    expect(find.text('Completed'), findsNothing);
   });
 
   testWidgets('uses hidden assistant items as the timestamp fallback', (
@@ -98,6 +98,7 @@ void main() {
           liveStateLabel: '',
           liveMessage: '',
           hasActiveTurn: false,
+          stickToBottom: false,
           showScrollToBottomButton: false,
           onScrollToBottom: () {},
         ),

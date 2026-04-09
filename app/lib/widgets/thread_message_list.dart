@@ -26,6 +26,7 @@ class ThreadMessageList extends StatelessWidget {
     required this.liveStateLabel,
     required this.liveMessage,
     required this.hasActiveTurn,
+    required this.stickToBottom,
     required this.showScrollToBottomButton,
     required this.onScrollToBottom,
     this.footer,
@@ -42,6 +43,7 @@ class ThreadMessageList extends StatelessWidget {
   final String liveStateLabel;
   final String liveMessage;
   final bool hasActiveTurn;
+  final bool stickToBottom;
   final bool showScrollToBottomButton;
   final VoidCallback onScrollToBottom;
   final Widget? footer;
@@ -74,7 +76,9 @@ class ThreadMessageList extends StatelessWidget {
               onNotification: onScrollNotification,
               child: ListView.builder(
                 controller: scrollController,
-                physics: const AlwaysScrollableScrollPhysics(),
+                physics: BottomAnchoredScrollPhysics(
+                  stickToBottom: stickToBottom,
+                ),
                 keyboardDismissBehavior:
                     ScrollViewKeyboardDismissBehavior.onDrag,
                 padding: padding,
@@ -152,6 +156,44 @@ class ThreadMessageList extends StatelessWidget {
       return const _ThreadMessageEmptyState();
     }
     return null;
+  }
+}
+
+class BottomAnchoredScrollPhysics extends AlwaysScrollableScrollPhysics {
+  const BottomAnchoredScrollPhysics({
+    required this.stickToBottom,
+    super.parent,
+  });
+
+  final bool stickToBottom;
+
+  @override
+  BottomAnchoredScrollPhysics applyTo(ScrollPhysics? ancestor) {
+    return BottomAnchoredScrollPhysics(
+      stickToBottom: stickToBottom,
+      parent: buildParent(ancestor),
+    );
+  }
+
+  @override
+  double adjustPositionForNewDimensions({
+    required ScrollMetrics oldPosition,
+    required ScrollMetrics newPosition,
+    required bool isScrolling,
+    required double velocity,
+  }) {
+    if (stickToBottom && !isScrolling) {
+      final target = newPosition.maxScrollExtent < newPosition.minScrollExtent
+          ? newPosition.minScrollExtent
+          : newPosition.maxScrollExtent;
+      return target;
+    }
+    return super.adjustPositionForNewDimensions(
+      oldPosition: oldPosition,
+      newPosition: newPosition,
+      isScrolling: isScrolling,
+      velocity: velocity,
+    );
   }
 }
 

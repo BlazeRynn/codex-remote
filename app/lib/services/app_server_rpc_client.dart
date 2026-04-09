@@ -219,7 +219,9 @@ class AppServerRpcClient {
         .toList(growable: false);
   }
 
-  Future<List<CodexDirectoryEntry>> listWorkspaceDirectories(String path) async {
+  Future<List<CodexDirectoryEntry>> listWorkspaceDirectories(
+    String path,
+  ) async {
     await ensureConnected();
     final response = await _request<Map<String, dynamic>>(
       'workspace/listDirectory',
@@ -244,10 +246,12 @@ class AppServerRpcClient {
         'includeLayers': false,
       });
       final config = asJsonMap(response['config']);
-      final cwd = readString(
-        config,
-        const ['cwd', 'workingDirectory', 'working_directory', 'workspacePath'],
-      ).trim();
+      final cwd = readString(config, const [
+        'cwd',
+        'workingDirectory',
+        'working_directory',
+        'workspacePath',
+      ]).trim();
       if (cwd.isEmpty) {
         return null;
       }
@@ -925,7 +929,7 @@ class AppServerRpcClient {
     final items = <CodexThreadItem>[];
     for (final turn in asJsonList(thread['turns']).map(asJsonMap)) {
       for (final item in asJsonList(turn['items']).map(asJsonMap)) {
-        items.add(_mapThreadItem(item, turn));
+        items.add(_mapThreadItem(item, turn, thread));
       }
     }
 
@@ -980,10 +984,13 @@ class AppServerRpcClient {
   CodexThreadItem _mapThreadItem(
     Map<String, dynamic> item,
     Map<String, dynamic> turn,
+    Map<String, dynamic> thread,
   ) {
     final rawType = readString(item, const ['type'], fallback: 'item');
     final type = _normalizeItemType(rawType);
     final createdAt = extractAppServerItemTimestamp(item, turn);
+    final threadCreatedAt =
+        readDate(thread, const ['createdAt']) ?? _deriveThreadCreatedAt(thread);
     final raw = <String, dynamic>{
       'turnId': readString(turn, const ['id']),
       'turnStatus': readString(turn, const ['status']),
@@ -991,12 +998,15 @@ class AppServerRpcClient {
       if (turn['timestamp'] != null) 'turnTimestamp': turn['timestamp'],
       if (turn['createdAt'] != null) 'turnCreatedAt': turn['createdAt'],
       if (turn['updatedAt'] != null) 'turnUpdatedAt': turn['updatedAt'],
+      if (threadCreatedAt != null)
+        'threadCreatedAt': threadCreatedAt.toUtc().toIso8601String(),
       ...item,
     };
 
     switch (rawType) {
       case 'userMessage':
-        final userBody = renderUserMessageContent(item['content']).trim().isNotEmpty
+        final userBody =
+            renderUserMessageContent(item['content']).trim().isNotEmpty
             ? renderUserMessageContent(item['content'])
             : renderUserMessageContent(item);
         return CodexThreadItem(
@@ -1562,7 +1572,7 @@ class AppServerRpcClient {
         final item = _mapThreadItem(asJsonMap(params['item']), {
           'id': readString(params, const ['turnId']),
           'status': 'completed',
-        });
+        }, asJsonMap(params['thread']));
         return BridgeRealtimeEvent(
           type:
               '${item.type}.${method.endsWith('started') ? 'started' : 'completed'}',
@@ -1595,7 +1605,7 @@ class AppServerRpcClient {
         final item = _mapThreadItem(asJsonMap(params['item']), {
           'id': readString(params, const ['turnId']),
           'status': 'started',
-        });
+        }, asJsonMap(params['thread']));
         return BridgeRealtimeEvent(
           type: 'thread.realtime.item.added',
           description: item.title,
