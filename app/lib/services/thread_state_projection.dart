@@ -25,6 +25,9 @@ CodexThreadSummary projectRealtimeStatusOnThread(
     case 'turn.completed':
       return thread.copyWith(status: 'idle', updatedAt: nextUpdatedAt);
     default:
+      if (_isStreamingActivityEvent(event)) {
+        return thread.copyWith(status: 'active', updatedAt: nextUpdatedAt);
+      }
       return thread;
   }
 }
@@ -67,8 +70,31 @@ CodexThreadRuntime projectRealtimeStatusOnRuntime(
             .toList(growable: false),
       );
     default:
+      if (_isStreamingActivityEvent(event)) {
+        final turnId = realtimeEventTurnId(event);
+        return turnId == null ? runtime : runtime.copyWith(activeTurnId: turnId);
+      }
       return runtime;
   }
+}
+
+bool _isStreamingActivityEvent(BridgeRealtimeEvent event) {
+  final method = realtimeEventMethod(event) ?? '';
+  if (method == 'item/agentMessage/delta' ||
+      method == 'item/plan/delta' ||
+      method == 'item/commandExecution/outputDelta' ||
+      method == 'item/fileChange/outputDelta' ||
+      method == 'item/reasoning/summaryTextDelta' ||
+      method == 'item/reasoning/textDelta' ||
+      method == 'thread/realtime/transcriptUpdated') {
+    return true;
+  }
+
+  return event.type == 'thread.realtime.started' ||
+      event.type == 'thread.realtime.item.added' ||
+      event.type == 'thread.realtime.transcript.updated' ||
+      event.type.endsWith('.delta') ||
+      event.type.endsWith('.updated');
 }
 
 DateTime _laterTimestamp(DateTime? current, DateTime next) {

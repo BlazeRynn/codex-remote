@@ -98,6 +98,46 @@ void main() {
     expect(updated.activeTurnId, isNull);
   });
 
+  test('marks thread active when streaming deltas arrive for the thread', () {
+    final thread = CodexThreadSummary(
+      id: 'thread-6',
+      title: 'Session',
+      status: 'idle',
+      preview: 'preview',
+    );
+    final event = _event(
+      type: 'agent.message.delta',
+      threadId: 'thread-6',
+      params: {
+        'threadId': 'thread-6',
+        'item': {'id': 'item-6', 'turnId': 'turn-6'},
+      },
+      raw: const {'method': 'item/agentMessage/delta'},
+    );
+
+    final updated = projectRealtimeStatusOnThread(thread, event);
+
+    expect(updated.status, 'active');
+    expect(updated.updatedAt, event.receivedAt);
+  });
+
+  test('marks runtime active when streaming deltas arrive with a turn id', () {
+    final runtime = CodexThreadRuntime(threadId: 'thread-7');
+    final event = _event(
+      type: 'agent.message.delta',
+      threadId: 'thread-7',
+      params: {
+        'threadId': 'thread-7',
+        'item': {'id': 'item-7', 'turnId': 'turn-7'},
+      },
+      raw: const {'method': 'item/agentMessage/delta'},
+    );
+
+    final updated = projectRealtimeStatusOnRuntime(runtime, event);
+
+    expect(updated.activeTurnId, 'turn-7');
+  });
+
   test('removes resolved pending requests from runtime', () {
     final request = CodexPendingRequest(
       id: 'req-1',
