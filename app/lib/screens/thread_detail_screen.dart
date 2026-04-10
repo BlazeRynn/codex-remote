@@ -3,6 +3,7 @@ import 'dart:io';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
+import 'package:flutter/scheduler.dart';
 import 'package:flutter/services.dart';
 
 import '../app/app_strings.dart';
@@ -142,11 +143,22 @@ class _ThreadDetailScreenState extends State<ThreadDetailScreen> {
           if (_headerLiveConnectionState == state) {
             return;
           }
-          if (!mounted) {
+          void applyState() {
+            if (!mounted || _headerLiveConnectionState == state) {
+              return;
+            }
+            setState(() {
+              _headerLiveConnectionState = state;
+            });
+          }
+
+          final phase = SchedulerBinding.instance.schedulerPhase;
+          if (phase == SchedulerPhase.idle) {
+            applyState();
             return;
           }
-          setState(() {
-            _headerLiveConnectionState = state;
+          WidgetsBinding.instance.addPostFrameCallback((_) {
+            applyState();
           });
         },
       ),
@@ -182,6 +194,7 @@ class _ThreadDetailPaneState extends State<ThreadDetailPane>
     with AutomaticKeepAliveClientMixin<ThreadDetailPane> {
   static final Map<String, CodexThreadBundle> _bundleCache = {};
   static final Map<String, CodexThreadRuntime> _runtimeCache = {};
+  static const int _maxCachedPrimeItems = 120;
 
   late final CodexRepository _repository;
   late final TextEditingController _composerController;
@@ -231,6 +244,7 @@ class _ThreadDetailPaneState extends State<ThreadDetailPane>
   bool _projectionRefreshQueued = false;
   bool _queuedProjectionForceScroll = false;
   String _queuedProjectionReason = 'unknown';
+  bool _primeProjectionPending = false;
   int _scrollToBottomRequestId = 0;
   int _queuedComposerSubmissionOrdinal = 0;
 
@@ -258,24 +272,31 @@ class _ThreadDetailPaneState extends State<ThreadDetailPane>
       threadId: widget.thread.id,
       pendingRequests: const [],
     );
-    _primeFromCache();
-    if (_isSelectedThread) {
-      WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (!mounted) {
-          return;
-        }
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) {
+        return;
+      }
+      final primedBundle = _primeFromCache(deferProjection: true);
+      if (_primeProjectionPending) {
+        _primeProjectionPending = false;
+        _requestConversationProjection(
+          forceScrollToBottom: _bundle.items.isNotEmpty && _followConversation,
+          reason: 'prime_cache',
+        );
+      }
+      if (_isSelectedThread) {
         _activateFollowConversationAndScroll();
-      });
-    }
+      }
+      unawaited(
+        _reloadAll(
+          showBundleSpinner: _bundle.items.isEmpty,
+          loadBundle: !primedBundle || !_shouldSkipInitialBundleReload(),
+          quietRuntime: _runtimeCache.containsKey(widget.thread.id),
+        ),
+      );
+      _openRealtime();
+    });
     _debugLog('init', fields: {'initialStatus': _bundle.thread.status});
-    unawaited(
-      _reloadAll(
-        showBundleSpinner: _bundle.items.isEmpty,
-        loadBundle: !_shouldSkipInitialBundleReload(),
-        quietRuntime: _runtimeCache.containsKey(widget.thread.id),
-      ),
-    );
-    _openRealtime();
   }
 
   @override
@@ -375,27 +396,44 @@ class _ThreadDetailPaneState extends State<ThreadDetailPane>
     await Future.wait(futures);
   }
 
-  void _primeFromCache() {
+  bool _primeFromCache({bool deferProjection = false}) {
+    var primedBundle = false;
+    var shouldRefreshView = false;
     final cachedBundle = _bundleCache[widget.thread.id];
-    if (cachedBundle != null) {
+    if (cachedBundle != null &&
+        cachedBundle.items.length <= _maxCachedPrimeItems) {
       _bundle = CodexThreadBundle(
         thread: _mergeThreadSummary(widget.thread, cachedBundle.thread),
         items: cachedBundle.items,
       );
       _realtimeAccumulator.replaceSnapshot(cachedBundle.items);
       _loading = false;
-      _requestConversationProjection(
-        forceScrollToBottom:
-            cachedBundle.items.isNotEmpty && _followConversation,
-        reason: 'prime_cache',
-      );
+      primedBundle = true;
+      shouldRefreshView = true;
+      final shouldPrimeProjection =
+          cachedBundle.items.isNotEmpty && _followConversation;
+      if (shouldPrimeProjection) {
+        if (deferProjection) {
+          _primeProjectionPending = true;
+        } else {
+          _requestConversationProjection(
+            forceScrollToBottom: true,
+            reason: 'prime_cache',
+          );
+        }
+      }
     }
 
     final cachedRuntime = _runtimeCache[widget.thread.id];
     if (cachedRuntime != null) {
       _runtime = cachedRuntime;
       _runtimeLoading = false;
+      shouldRefreshView = true;
     }
+    if (mounted && shouldRefreshView) {
+      setState(() {});
+    }
+    return primedBundle;
   }
 
   bool _shouldSkipInitialBundleReload() {
@@ -519,12 +557,22 @@ class _ThreadDetailPaneState extends State<ThreadDetailPane>
         final items = _realtimeAccumulator.items;
         final previousProjection = _conversationProjection;
         final projectionRevision = _realtimeAccumulator.revision;
+        final isInitialProjection =
+            previousProjection.entries.isEmpty && items.isNotEmpty;
         final useBackgroundProjection =
+            isInitialProjection ||
             shouldProjectThreadMessageListInBackground(items);
         if (useBackgroundProjection && !_projectionLoading && mounted) {
           setState(() {
             _projectionLoading = true;
           });
+        }
+        if (isInitialProjection) {
+          // Let the loading frame paint before doing initial transfer work.
+          await Future<void>.delayed(Duration.zero);
+          if (!mounted || requestThreadId != widget.thread.id) {
+            return;
+          }
         }
 
         ThreadMessageListProjection nextProjection;

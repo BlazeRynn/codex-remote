@@ -244,6 +244,19 @@ bool _shouldCollapseOperationRun(
   return runLength > 1;
 }
 
+bool _shouldCollapseUserBubble(CodexThreadItem item) {
+  if (item.type != 'user.message' && item.actor != 'user') {
+    return false;
+  }
+  final body = item.body.trimRight();
+  if (body.isEmpty) {
+    return false;
+  }
+  final lineCount = '\n'.allMatches(body).length + 1;
+  final charCount = body.runes.length;
+  return charCount >= 420 || lineCount >= 8;
+}
+
 class BottomAnchoredScrollPhysics extends AlwaysScrollableScrollPhysics {
   const BottomAnchoredScrollPhysics({
     required this.stickToBottom,
@@ -322,7 +335,7 @@ class _ThreadMessageEntryView extends StatelessWidget {
   }
 }
 
-class _ThreadMessageBubbleCard extends StatelessWidget {
+class _ThreadMessageBubbleCard extends StatefulWidget {
   const _ThreadMessageBubbleCard({
     required this.entry,
     required this.workspaceStyle,
@@ -332,8 +345,26 @@ class _ThreadMessageBubbleCard extends StatelessWidget {
   final bool workspaceStyle;
 
   @override
+  State<_ThreadMessageBubbleCard> createState() =>
+      _ThreadMessageBubbleCardState();
+}
+
+class _ThreadMessageBubbleCardState extends State<_ThreadMessageBubbleCard> {
+  bool _expanded = false;
+
+  @override
+  void didUpdateWidget(covariant _ThreadMessageBubbleCard oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.entry.key != widget.entry.key && _expanded) {
+      _expanded = false;
+    }
+  }
+
+  @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
+    final entry = widget.entry;
+    final workspaceStyle = widget.workspaceStyle;
     final item = _bubbleDisplayItem(entry);
     if (item == null) {
       return const SizedBox.shrink();
@@ -346,6 +377,17 @@ class _ThreadMessageBubbleCard extends StatelessWidget {
     final borderColorValue = isUser
         ? theme.colorScheme.primary.withValues(alpha: 0.24)
         : borderColor(theme);
+    final canCollapseBody = isUser && _shouldCollapseUserBubble(item);
+    final collapsedBodyPreview = canCollapseBody && !_expanded;
+    final messageBody = collapsedBodyPreview
+        ? _CollapsedUserBubblePreview(
+            item: item,
+            workspaceStyle: workspaceStyle,
+          )
+        : ConversationMessageBody(
+            item: item,
+            workspaceStyle: workspaceStyle,
+          );
 
     return Padding(
       padding: EdgeInsets.only(bottom: workspaceStyle ? 8 : 14),
@@ -395,16 +437,70 @@ class _ThreadMessageBubbleCard extends StatelessWidget {
                     ),
                   ],
                   SizedBox(height: workspaceStyle ? 8 : 10),
-                  ConversationMessageBody(
-                    item: item,
-                    workspaceStyle: workspaceStyle,
-                  ),
+                  messageBody,
+                  if (canCollapseBody) ...[
+                    SizedBox(height: workspaceStyle ? 6 : 8),
+                    Align(
+                      alignment: Alignment.centerRight,
+                      child: TextButton.icon(
+                        onPressed: () {
+                          setState(() {
+                            _expanded = !_expanded;
+                          });
+                        },
+                        style: TextButton.styleFrom(
+                          visualDensity: VisualDensity.compact,
+                          padding: EdgeInsets.symmetric(
+                            horizontal: workspaceStyle ? 8 : 10,
+                            vertical: workspaceStyle ? 4 : 6,
+                          ),
+                        ),
+                        icon: Icon(
+                          _expanded
+                              ? Icons.expand_less_rounded
+                              : Icons.expand_more_rounded,
+                          size: workspaceStyle ? 16 : 18,
+                        ),
+                        label: Text(
+                          context.strings.text(
+                            _expanded ? 'Collapse' : 'Expand',
+                            _expanded ? '收起' : '展开',
+                          ),
+                        ),
+                      ),
+                    ),
+                  ],
                 ],
               ),
             ),
           ),
         ),
       ),
+    );
+  }
+}
+
+class _CollapsedUserBubblePreview extends StatelessWidget {
+  const _CollapsedUserBubblePreview({
+    required this.item,
+    required this.workspaceStyle,
+  });
+
+  final CodexThreadItem item;
+  final bool workspaceStyle;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final content = item.body.trimRight();
+    if (content.isEmpty) {
+      return const SizedBox.shrink();
+    }
+    return Text(
+      content,
+      maxLines: workspaceStyle ? 8 : 10,
+      overflow: TextOverflow.ellipsis,
+      style: theme.textTheme.bodyMedium?.copyWith(height: 1.4),
     );
   }
 }

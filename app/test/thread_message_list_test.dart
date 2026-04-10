@@ -49,6 +49,54 @@ void main() {
     expect(find.text('Completed'), findsNothing);
   });
 
+  testWidgets('collapses long user messages and allows expanding', (tester) async {
+    final longBody = List.filled(
+      14,
+      'This is a long user prompt line used to verify bubble collapsing behavior.',
+    ).join('\n');
+    final projection = projectThreadMessageList([
+      CodexThreadItem(
+        id: 'user-long-1',
+        type: 'user.message',
+        title: 'User message',
+        body: longBody,
+        status: 'completed',
+        actor: 'user',
+        createdAt: DateTime.now().toUtc().subtract(const Duration(minutes: 1)),
+        raw: const {'turnId': 'turn-long-1'},
+      ),
+    ]);
+
+    await tester.pumpWidget(
+      _buildTestApp(
+        child: ThreadMessageList(
+          projection: projection,
+          loading: false,
+          errorMessage: null,
+          scrollController: ScrollController(),
+          onRefresh: () async {},
+          onScrollNotification: (_) => false,
+          workspaceStyle: false,
+          showLiveStatus: false,
+          liveStateLabel: '',
+          liveMessage: '',
+          hasActiveTurn: false,
+          stickToBottom: false,
+          showScrollToBottomButton: false,
+          onScrollToBottom: () {},
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.text('Expand'), findsOneWidget);
+    expect(find.text('Collapse'), findsNothing);
+
+    await tester.tap(find.text('Expand'));
+    await tester.pumpAndSettle();
+    expect(find.text('Collapse'), findsOneWidget);
+  });
+
   testWidgets('uses hidden assistant items as the timestamp fallback', (
     tester,
   ) async {
