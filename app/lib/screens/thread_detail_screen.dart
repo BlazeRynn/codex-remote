@@ -2021,10 +2021,24 @@ class _ThreadDetailPaneState extends State<ThreadDetailPane>
     Map<String, dynamic>? answers,
     Object? content,
   }) async {
+    final pendingBeforeResponse = _runtime.pendingRequests;
+    final requestWasPending = pendingBeforeResponse.any(
+      (pending) => pending.id == request.id,
+    );
+    final optimisticPending = pendingBeforeResponse
+        .where((pending) => pending.id != request.id)
+        .toList(growable: false);
+
     setState(() {
       _responding = true;
       _controlError = null;
+      if (requestWasPending) {
+        _runtime = _runtime.copyWith(pendingRequests: optimisticPending);
+      }
     });
+    if (requestWasPending) {
+      _storeRuntimeCache(_runtime);
+    }
 
     try {
       final runtime = await _repository.respondToPendingRequest(
@@ -2057,9 +2071,19 @@ class _ThreadDetailPaneState extends State<ThreadDetailPane>
       if (!mounted) {
         return;
       }
+
+      final stillMissing = !_runtime.pendingRequests.any(
+        (pending) => pending.id == request.id,
+      );
       setState(() {
         _controlError = error.toString();
+        if (requestWasPending && stillMissing) {
+          _runtime = _runtime.copyWith(
+            pendingRequests: [request, ..._runtime.pendingRequests],
+          );
+        }
       });
+      _storeRuntimeCache(_runtime);
     } finally {
       if (mounted) {
         setState(() {
