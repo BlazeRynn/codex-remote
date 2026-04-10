@@ -308,6 +308,98 @@ void main() {
     expect(find.text('from lib/old_name.dart'), findsOneWidget);
   });
 
+  testWidgets(
+    'collapses operation runs across completed reasoning separators',
+    (tester) async {
+      final item = CodexThreadItem(
+        id: 'assistant-group-ops-reasoning',
+        type: 'assistant.group',
+        title: 'Codex',
+        body: '',
+        status: 'in_progress',
+        actor: 'assistant',
+        raw: {
+          'bubbleItems': [
+            CodexThreadItem(
+              id: 'cmd-a',
+              type: 'command.execution',
+              title: 'Command',
+              body: '',
+              status: 'completed',
+              actor: 'assistant',
+              raw: const {'command': ['Get-ChildItem', '-Force']},
+            ),
+            CodexThreadItem(
+              id: 'reasoning-a',
+              type: 'reasoning',
+              title: 'Reasoning',
+              body: '',
+              status: 'completed',
+              actor: 'assistant',
+            ),
+            CodexThreadItem(
+              id: 'cmd-b',
+              type: 'command.execution',
+              title: 'Command',
+              body: '',
+              status: 'completed',
+              actor: 'assistant',
+              raw: const {'command': ['rg', 'thread']},
+            ),
+            CodexThreadItem(
+              id: 'reasoning-b',
+              type: 'reasoning',
+              title: 'Reasoning',
+              body: '',
+              status: 'completed',
+              actor: 'assistant',
+            ),
+            CodexThreadItem(
+              id: 'cmd-c',
+              type: 'command.execution',
+              title: 'Command',
+              body: '',
+              status: 'completed',
+              actor: 'assistant',
+              raw: const {'command': [r'$f', '=']},
+            ),
+          ],
+        },
+      );
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(body: ConversationMessageBody(item: item)),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      expect(find.text('Ran 3 commands'), findsOneWidget);
+      expect(
+        find.byKey(const ValueKey('assistant-group-command-card:cmd-a')),
+        findsNothing,
+      );
+      expect(find.text('Thought complete'), findsNothing);
+
+      await tester.tap(find.text('Ran 3 commands'));
+      await tester.pumpAndSettle();
+
+      expect(
+        find.byKey(const ValueKey('assistant-group-command-card:cmd-a')),
+        findsOneWidget,
+      );
+      expect(
+        find.byKey(const ValueKey('assistant-group-command-card:cmd-b')),
+        findsOneWidget,
+      );
+      expect(
+        find.byKey(const ValueKey('assistant-group-command-card:cmd-c')),
+        findsOneWidget,
+      );
+      expect(find.text('Thought complete'), findsNothing);
+    },
+  );
+
   testWidgets('renders structured plan items as a task panel', (tester) async {
     final item = CodexThreadItem(
       id: 'plan-1',

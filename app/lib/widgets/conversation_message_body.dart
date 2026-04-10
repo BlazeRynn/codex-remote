@@ -185,20 +185,47 @@ List<_AssistantGroupRenderBlock> _buildAssistantGroupBlocks(
       continue;
     }
 
-    final runStart = index;
-    while (index < items.length && _isAssistantOperationItem(items[index])) {
-      index += 1;
-    }
-
-    final operationRun = items.sublist(runStart, index);
-    if (collapseOperations && operationRun.length > 1) {
-      blocks.add(_AssistantGroupRenderBlock.operation(operationRun));
+    if (!collapseOperations) {
+      final runStart = index;
+      while (index < items.length && _isAssistantOperationItem(items[index])) {
+        index += 1;
+      }
+      final operationRun = items.sublist(runStart, index);
+      for (final operationItem in operationRun) {
+        blocks.add(_AssistantGroupRenderBlock.item(operationItem));
+      }
       continue;
     }
 
-    for (final operationItem in operationRun) {
-      blocks.add(_AssistantGroupRenderBlock.item(operationItem));
+    final collapsedOperations = <CodexThreadItem>[];
+    var cursor = index;
+    while (cursor < items.length) {
+      final candidate = items[cursor];
+      if (_isAssistantOperationItem(candidate)) {
+        collapsedOperations.add(candidate);
+        cursor += 1;
+        continue;
+      }
+      final nextIsOperation =
+          cursor + 1 < items.length &&
+          _isAssistantOperationItem(items[cursor + 1]);
+      if (_isCollapsibleReasoningSeparator(candidate) &&
+          collapsedOperations.isNotEmpty &&
+          nextIsOperation) {
+        cursor += 1;
+        continue;
+      }
+      break;
     }
+
+    if (collapsedOperations.length > 1) {
+      blocks.add(_AssistantGroupRenderBlock.operation(collapsedOperations));
+      index = cursor;
+      continue;
+    }
+
+    blocks.add(_AssistantGroupRenderBlock.item(item));
+    index += 1;
   }
   return blocks;
 }
@@ -209,6 +236,16 @@ bool _isAssistantOperationItem(CodexThreadItem item) {
 
 bool _assistantGroupHasFinalAnswer(List<CodexThreadItem> items) {
   return items.any((item) => _itemPhase(item) == 'final_answer');
+}
+
+bool _isCollapsibleReasoningSeparator(CodexThreadItem item) {
+  if (item.type != 'reasoning') {
+    return false;
+  }
+  if (_isReasoningInProgress(item)) {
+    return false;
+  }
+  return item.body.trim().isEmpty;
 }
 
 class _AssistantGroupItemBody extends StatelessWidget {
