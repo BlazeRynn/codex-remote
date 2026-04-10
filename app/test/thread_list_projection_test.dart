@@ -90,6 +90,26 @@ void main() {
     },
   );
 
+  test('does not auto-select the first thread without a preferred selection', () {
+    final projection = ThreadListProjection(
+      threads: sortThreadsForDisplay([
+        _thread(
+          id: 'active',
+          status: 'active',
+          createdAt: DateTime.utc(2026, 4, 6),
+        ),
+        _thread(id: 'idle', createdAt: DateTime.utc(2026, 4, 5)),
+      ]),
+      preferredSelectedThreadId: null,
+      showArchivedThreads: false,
+      showAllWorkspaces: true,
+      isThreadArchived: (_) => false,
+    );
+
+    expect(projection.selectedThreadId, isNull);
+    expect(projection.selectedThread, isNull);
+  });
+
   test('showArchivedThreads includes both active and archived threads', () {
     final projection = ThreadListProjection(
       threads: sortThreadsForDisplay([

@@ -682,11 +682,7 @@ class _ThreadListScreenState extends State<ThreadListScreen> {
       'No sessions returned by the app-server yet.',
       'App-server 还没有返回任何会话。',
     );
-    final effectiveSelectedThreadId =
-        selectedThread?.id ??
-        (visibleThreads.isNotEmpty
-            ? visibleThreads.first.id
-            : _selectedThreadId);
+    final effectiveSelectedThreadId = projection.selectedThreadId;
     _debugLog(
       'build',
       fields: {

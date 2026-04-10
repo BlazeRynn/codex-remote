@@ -169,8 +169,11 @@ String? resolveSelectedThreadId(
     return null;
   }
 
-  if (preferredId != null &&
-      threads.any((thread) => thread.id == preferredId)) {
+  if (preferredId == null) {
+    return null;
+  }
+
+  if (threads.any((thread) => thread.id == preferredId)) {
     return preferredId;
   }
 
@@ -186,6 +189,9 @@ CodexThreadSummary? selectedThreadForThreads(
   }
 
   final selectedId = selectedThreadId;
+  if (selectedId == null) {
+    return null;
+  }
   for (final thread in threads) {
     if (thread.id == selectedId) {
       return thread;
