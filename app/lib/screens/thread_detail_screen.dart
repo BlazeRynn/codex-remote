@@ -235,6 +235,7 @@ class _ThreadDetailPaneState extends State<ThreadDetailPane>
   StreamSubscription<BridgeRealtimeEvent>? _realtimeSubscription;
   Timer? _refreshDebounce;
   Timer? _reattachProbeTimer;
+  Timer? _realtimeReconnectTimer;
   bool _bundleRequestInFlight = false;
   bool _runtimeRequestInFlight = false;
   bool _pendingRequestsExpanded = false;
@@ -255,6 +256,7 @@ class _ThreadDetailPaneState extends State<ThreadDetailPane>
   bool _primeProjectionPending = false;
   int _scrollToBottomRequestId = 0;
   int _queuedComposerSubmissionOrdinal = 0;
+  int _realtimeReconnectAttempt = 0;
 
   @override
   bool get wantKeepAlive => true;
@@ -383,6 +385,7 @@ class _ThreadDetailPaneState extends State<ThreadDetailPane>
   void dispose() {
     _refreshDebounce?.cancel();
     _reattachProbeTimer?.cancel();
+    _realtimeReconnectTimer?.cancel();
     _composerController.dispose();
     _timelineScrollController
       ..removeListener(_handleTimelineScroll)
@@ -1177,6 +1180,9 @@ class _ThreadDetailPaneState extends State<ThreadDetailPane>
             _applyRealtimeThreadState(event);
             insertRealtimeEvent(_liveEvents, event);
           });
+          _realtimeReconnectAttempt = 0;
+          _realtimeReconnectTimer?.cancel();
+          _realtimeReconnectTimer = null;
           widget.onLiveConnectionStateChanged?.call(_liveConnectionState);
           _storeCurrentThreadState(items: nextConversationItems);
           _debugLog(
@@ -1223,6 +1229,7 @@ class _ThreadDetailPaneState extends State<ThreadDetailPane>
           });
           widget.onLiveConnectionStateChanged?.call(_liveConnectionState);
           _debugLog('realtime.error', fields: {'error': error});
+          _scheduleRealtimeReconnect(reason: 'stream_error');
         },
         onDone: () {
           if (!mounted) {
@@ -1236,12 +1243,16 @@ class _ThreadDetailPaneState extends State<ThreadDetailPane>
           });
           widget.onLiveConnectionStateChanged?.call(_liveConnectionState);
           _debugLog('realtime.closed');
+          _scheduleRealtimeReconnect(reason: 'stream_done');
         },
       );
 
       setState(() {
         _liveConnectionState = LiveConnectionState.connected;
       });
+      _realtimeReconnectAttempt = 0;
+      _realtimeReconnectTimer?.cancel();
+      _realtimeReconnectTimer = null;
       widget.onLiveConnectionStateChanged?.call(_liveConnectionState);
       _debugLog('realtime.connected');
     } catch (error) {
@@ -1251,11 +1262,14 @@ class _ThreadDetailPaneState extends State<ThreadDetailPane>
       });
       widget.onLiveConnectionStateChanged?.call(_liveConnectionState);
       _debugLog('realtime.open_failed', fields: {'error': error});
+      _scheduleRealtimeReconnect(reason: 'open_failed');
     }
   }
 
   Future<void> _closeRealtime() async {
     _stopReattachProbe();
+    _realtimeReconnectTimer?.cancel();
+    _realtimeReconnectTimer = null;
     await _realtimeSubscription?.cancel();
     await _realtimeSession?.close();
     _realtimeSubscription = null;
@@ -1370,6 +1384,46 @@ class _ThreadDetailPaneState extends State<ThreadDetailPane>
         return;
       }
       unawaited(_probeRealtimeAttach());
+    });
+  }
+
+  void _scheduleRealtimeReconnect({required String reason}) {
+    if (!mounted || !widget.config.isConfigured) {
+      return;
+    }
+    if (_realtimeReconnectTimer != null) {
+      return;
+    }
+
+    const delays = <Duration>[
+      Duration(milliseconds: 600),
+      Duration(seconds: 1),
+      Duration(seconds: 2),
+      Duration(seconds: 4),
+      Duration(seconds: 8),
+    ];
+    final delay =
+        delays[_realtimeReconnectAttempt < delays.length
+            ? _realtimeReconnectAttempt
+            : delays.length - 1];
+    _realtimeReconnectAttempt += 1;
+    _debugLog(
+      'realtime.reconnect_scheduled',
+      fields: {
+        'reason': reason,
+        'delayMs': delay.inMilliseconds,
+        'attempt': _realtimeReconnectAttempt,
+      },
+    );
+    _realtimeReconnectTimer = Timer(delay, () {
+      _realtimeReconnectTimer = null;
+      if (!mounted || !widget.config.isConfigured) {
+        return;
+      }
+      if (_liveConnectionState == LiveConnectionState.connected) {
+        return;
+      }
+      unawaited(_reconnectRealtime());
     });
   }
 
