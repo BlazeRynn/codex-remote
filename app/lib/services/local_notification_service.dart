@@ -15,6 +15,11 @@ class LocalNotificationService {
       FlutterLocalNotificationsPlugin();
 
   bool _initialized = false;
+  bool _appInForeground = false;
+
+  void setAppInForeground(bool value) {
+    _appInForeground = value;
+  }
 
   Future<void> initialize() async {
     if (_initialized || !_isSupportedPlatform) {
@@ -51,7 +56,7 @@ class LocalNotificationService {
     required String body,
     String? tag,
   }) async {
-    if (!_isSupportedPlatform) {
+    if (!_isSupportedPlatform || _appInForeground) {
       return;
     }
     if (!_initialized) {

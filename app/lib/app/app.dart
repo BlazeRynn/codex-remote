@@ -31,6 +31,7 @@ class CodexMobileApp extends StatefulWidget {
 class _CodexMobileAppState extends State<CodexMobileApp> {
   late final AppPreferencesController _preferencesController;
   late final LocalNotificationService _notificationService;
+  late final _AppLifecycleObserver _lifecycleObserver;
 
   @override
   void initState() {
@@ -40,14 +41,24 @@ class _CodexMobileAppState extends State<CodexMobileApp> {
     );
     _notificationService =
         widget.notificationService ?? LocalNotificationService();
+    _lifecycleObserver = _AppLifecycleObserver(_notificationService);
+    WidgetsBinding.instance.addObserver(_lifecycleObserver);
+    _notificationService.setAppInForeground(_isAppInForeground());
     unawaited(_preferencesController.load());
-    unawaited(_notificationService.initialize());
   }
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(_lifecycleObserver);
     _preferencesController.dispose();
     super.dispose();
+  }
+
+  bool _isAppInForeground() {
+    final state = WidgetsBinding.instance.lifecycleState;
+    return state == null ||
+        state == AppLifecycleState.resumed ||
+        state == AppLifecycleState.inactive;
   }
 
   @override
@@ -86,6 +97,20 @@ class _CodexMobileAppState extends State<CodexMobileApp> {
           ),
         );
       },
+    );
+  }
+}
+
+class _AppLifecycleObserver with WidgetsBindingObserver {
+  _AppLifecycleObserver(this._notificationService);
+
+  final LocalNotificationService _notificationService;
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    _notificationService.setAppInForeground(
+      state == AppLifecycleState.resumed ||
+          state == AppLifecycleState.inactive,
     );
   }
 }

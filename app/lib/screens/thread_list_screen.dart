@@ -59,6 +59,7 @@ class _ThreadListScreenState extends State<ThreadListScreen> {
   CodexRealtimeSession? _realtimeSession;
   StreamSubscription<BridgeRealtimeEvent>? _realtimeSubscription;
   Timer? _realtimeRefreshDebounce;
+  DateTime? _suppressNotificationsBefore;
   final List<String> _recentNotificationEventKeys = <String>[];
   final Set<String> _recentNotificationEventKeySet = <String>{};
 
@@ -245,6 +246,7 @@ class _ThreadListScreenState extends State<ThreadListScreen> {
     await _closeRealtime();
 
     try {
+      _suppressNotificationsBefore = DateTime.now().toUtc();
       final session = createCodexRepository(config).openThreadEvents();
       _realtimeSession = session;
       _realtimeSubscription = session.stream.listen(
@@ -370,6 +372,12 @@ class _ThreadListScreenState extends State<ThreadListScreen> {
     }
 
     if (!notify) {
+      return;
+    }
+
+    final suppressBefore = _suppressNotificationsBefore;
+    final occurredAt = realtimeEventOccurredAt(event).toUtc();
+    if (suppressBefore != null && !occurredAt.isAfter(suppressBefore)) {
       return;
     }
 
