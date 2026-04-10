@@ -1255,12 +1255,6 @@ class AppServerRpcClient {
               recommended: false,
               destructive: true,
             ),
-            CodexPendingAction(
-              id: 'cancel',
-              label: 'Stop Turn',
-              recommended: false,
-              destructive: true,
-            ),
           ],
           questions: const [],
           formFields: const [],
@@ -1281,14 +1275,14 @@ class AppServerRpcClient {
               'Codex requested additional permissions for this turn.',
           actions: const [
             CodexPendingAction(
-              id: 'grant_turn',
-              label: 'Grant Once',
+              id: 'approve',
+              label: 'Approve',
               recommended: true,
               destructive: false,
             ),
             CodexPendingAction(
-              id: 'grant_session',
-              label: 'Grant For Session',
+              id: 'approve_for_session',
+              label: 'Always Allow',
               recommended: false,
               destructive: false,
             ),
@@ -1824,10 +1818,12 @@ _PendingRequestResponse _buildPendingRequestResponse(
     case 'item/permissions/requestApproval':
       final permissions = asJsonMap(request.params['permissions']);
       switch (action) {
+        case 'approve':
         case 'grant_turn':
           return _PendingRequestResponse(
             result: {'permissions': permissions, 'scope': 'turn'},
           );
+        case 'approve_for_session':
         case 'grant_session':
           return _PendingRequestResponse(
             result: {'permissions': permissions, 'scope': 'session'},
@@ -1920,15 +1916,6 @@ List<CodexPendingAction> _commandApprovalActions(Object? value) {
         destructive: true,
       ),
     ),
-    (
-      'cancel',
-      const CodexPendingAction(
-        id: 'cancel',
-        label: 'Stop Turn',
-        recommended: false,
-        destructive: true,
-      ),
-    ),
   ];
 
   final filtered = actions
@@ -1942,6 +1929,12 @@ List<CodexPendingAction> _commandApprovalActions(Object? value) {
             id: 'approve',
             label: 'Approve',
             recommended: true,
+            destructive: false,
+          ),
+          CodexPendingAction(
+            id: 'approve_for_session',
+            label: 'Always Allow',
+            recommended: false,
             destructive: false,
           ),
           CodexPendingAction(

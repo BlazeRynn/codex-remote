@@ -1,4 +1,4 @@
-﻿import 'dart:async';
+import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter/material.dart';
@@ -95,7 +95,11 @@ class _ThreadDetailScreenState extends State<ThreadDetailScreen> {
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Text(widget.thread.title, maxLines: 1, overflow: TextOverflow.ellipsis),
+            Text(
+              widget.thread.title,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+            ),
             const SizedBox(height: 3),
             Row(
               children: [
@@ -116,7 +120,11 @@ class _ThreadDetailScreenState extends State<ThreadDetailScreen> {
                 const SizedBox(width: 8),
                 Tooltip(
                   message: connectionInfo.$3,
-                  child: Icon(connectionInfo.$1, size: 14, color: connectionInfo.$2),
+                  child: Icon(
+                    connectionInfo.$1,
+                    size: 14,
+                    color: connectionInfo.$2,
+                  ),
                 ),
               ],
             ),
@@ -1942,12 +1950,18 @@ class _ThreadDetailPaneState extends State<ThreadDetailPane>
                           summary: _queuedComposerSummary(strings),
                           busy: _submitting,
                           hasActiveTurn: _hasActiveTurnInFlight,
-                          onEdit: (submission) =>
-                              dismissAndRun(_editQueuedComposerSubmission, submission),
-                          onDelete: (submission) =>
-                              dismissAndRun(_removeQueuedComposerSubmission, submission),
-                          onSteer: (submission) =>
-                              dismissAndRun(_steerQueuedComposerSubmission, submission),
+                          onEdit: (submission) => dismissAndRun(
+                            _editQueuedComposerSubmission,
+                            submission,
+                          ),
+                          onDelete: (submission) => dismissAndRun(
+                            _removeQueuedComposerSubmission,
+                            submission,
+                          ),
+                          onSteer: (submission) => dismissAndRun(
+                            _steerQueuedComposerSubmission,
+                            submission,
+                          ),
                           workspaceStyle: widget.workspaceStyle,
                         ),
                       ),
@@ -2639,7 +2653,7 @@ class _WorkspaceHeaderPanel extends StatelessWidget {
                     unawaited(onRefresh());
                   },
                   icon: const Icon(Icons.sync),
-                  label: Text(strings.text('Refresh', 'Refresh')), 
+                  label: Text(strings.text('Refresh', 'Refresh')),
                 ),
             ],
           ),
@@ -2833,7 +2847,7 @@ class _PendingRequestsPanel extends StatelessWidget {
   }
 }
 
-class _PendingRequestCard extends StatelessWidget {
+class _PendingRequestCard extends StatefulWidget {
   const _PendingRequestCard({
     required this.request,
     required this.busy,
@@ -2852,7 +2866,36 @@ class _PendingRequestCard extends StatelessWidget {
   final bool compact;
 
   @override
+  State<_PendingRequestCard> createState() => _PendingRequestCardState();
+}
+
+class _PendingRequestCardState extends State<_PendingRequestCard> {
+  bool _approvalExpanded = false;
+
+  Size _actionButtonMinSize({required bool compact}) {
+    return Size(compact ? 72 : 64, compact ? 28 : 30);
+  }
+
+  EdgeInsets _actionButtonPadding({required bool compact}) {
+    return EdgeInsets.symmetric(
+      horizontal: compact ? 8 : 10,
+      vertical: compact ? 4 : 5,
+    );
+  }
+
+  TextStyle? _actionButtonTextStyle(ThemeData theme, {required bool compact}) {
+    return (compact ? theme.textTheme.labelSmall : theme.textTheme.labelMedium)
+        ?.copyWith(fontWeight: FontWeight.w600);
+  }
+
+  @override
   Widget build(BuildContext context) {
+    final request = widget.request;
+    final busy = widget.busy;
+    final onRespond = widget.onRespond;
+    final onOpenStructuredRequest = widget.onOpenStructuredRequest;
+    final onCopyUrl = widget.onCopyUrl;
+    final compact = widget.compact;
     final theme = Theme.of(context);
     final strings = context.strings;
     final isApprovalCard = request.kind.contains('approval');
@@ -2863,13 +2906,25 @@ class _PendingRequestCard extends StatelessWidget {
       request.command?.trim() ?? '',
       request.cwd?.trim() ?? '',
     ].where((part) => part.isNotEmpty).toList(growable: false);
-    final summaryText =
-        summaryParts.isEmpty ? request.kind : summaryParts.join(' · ');
-    final structuredAction = request.actions.where(
-      (action) =>
-          !action.destructive &&
-          (action.id == 'submit' || action.id == 'accept'),
-    );
+    final summaryText = summaryParts.isEmpty
+        ? request.kind
+        : summaryParts.join(' · ');
+    final approvalDetailLines = <String>[
+      request.message.trim(),
+      request.detail?.trim() ?? '',
+      request.command?.trim() ?? '',
+      request.cwd?.trim() ?? '',
+    ].where((part) => part.isNotEmpty).toList(growable: false);
+    final canExpandApproval = isApprovalCard && approvalDetailLines.isNotEmpty;
+    final structuredAction = isApprovalCard
+        ? const <CodexPendingAction>[]
+        : request.actions
+              .where(
+                (action) =>
+                    !action.destructive &&
+                    (action.id == 'submit' || action.id == 'accept'),
+              )
+              .toList(growable: false);
     final actionButtons = <Widget>[
       ...structuredAction.map(
         (action) => FilledButton(
@@ -2881,8 +2936,13 @@ class _PendingRequestCard extends StatelessWidget {
           style: FilledButton.styleFrom(
             visualDensity: VisualDensity.compact,
             tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+            minimumSize: _actionButtonMinSize(compact: compact),
+            padding: _actionButtonPadding(compact: compact),
           ),
-          child: Text(action.label),
+          child: Text(
+            action.label,
+            style: _actionButtonTextStyle(theme, compact: compact),
+          ),
         ),
       ),
       ...request.actions
@@ -2898,8 +2958,13 @@ class _PendingRequestCard extends StatelessWidget {
                     style: OutlinedButton.styleFrom(
                       visualDensity: VisualDensity.compact,
                       tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                      minimumSize: _actionButtonMinSize(compact: compact),
+                      padding: _actionButtonPadding(compact: compact),
                     ),
-                    child: Text(action.label),
+                    child: Text(
+                      action.label,
+                      style: _actionButtonTextStyle(theme, compact: compact),
+                    ),
                   )
                 : FilledButton.tonal(
                     onPressed: busy
@@ -2910,8 +2975,13 @@ class _PendingRequestCard extends StatelessWidget {
                     style: FilledButton.styleFrom(
                       visualDensity: VisualDensity.compact,
                       tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                      minimumSize: _actionButtonMinSize(compact: compact),
+                      padding: _actionButtonPadding(compact: compact),
                     ),
-                    child: Text(action.label),
+                    child: Text(
+                      action.label,
+                      style: _actionButtonTextStyle(theme, compact: compact),
+                    ),
                   ),
           ),
       if ((request.url ?? '').trim().isNotEmpty)
@@ -2925,8 +2995,13 @@ class _PendingRequestCard extends StatelessWidget {
           style: OutlinedButton.styleFrom(
             visualDensity: VisualDensity.compact,
             tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+            minimumSize: _actionButtonMinSize(compact: compact),
+            padding: _actionButtonPadding(compact: compact),
           ),
-          label: Text(strings.text('Copy URL', '复制 URL')),
+          label: Text(
+            strings.text('Copy URL', '复制 URL'),
+            style: _actionButtonTextStyle(theme, compact: compact),
+          ),
         ),
     ];
 
@@ -2945,29 +3020,83 @@ class _PendingRequestCard extends StatelessWidget {
               Row(
                 children: [
                   Expanded(
-                    child: Text(
-                      summaryText,
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: compact
-                          ? theme.textTheme.bodySmall
-                          : theme.textTheme.bodyMedium,
+                    child: InkWell(
+                      onTap: canExpandApproval
+                          ? () {
+                              setState(() {
+                                _approvalExpanded = !_approvalExpanded;
+                              });
+                            }
+                          : null,
+                      borderRadius: BorderRadius.circular(8),
+                      child: Padding(
+                        padding: const EdgeInsets.symmetric(vertical: 2),
+                        child: Text(
+                          summaryText,
+                          maxLines: _approvalExpanded ? null : 1,
+                          overflow: _approvalExpanded
+                              ? null
+                              : TextOverflow.ellipsis,
+                          style: compact
+                              ? theme.textTheme.bodySmall
+                              : theme.textTheme.bodyMedium,
+                        ),
+                      ),
                     ),
                   ),
-                  const SizedBox(width: 10),
+                  if (canExpandApproval) ...[
+                    const SizedBox(width: 2),
+                    IconButton(
+                      onPressed: () {
+                        setState(() {
+                          _approvalExpanded = !_approvalExpanded;
+                        });
+                      },
+                      visualDensity: VisualDensity.compact,
+                      padding: EdgeInsets.zero,
+                      constraints: BoxConstraints(
+                        minWidth: compact ? 24 : 28,
+                        minHeight: compact ? 24 : 28,
+                      ),
+                      iconSize: compact ? 16 : 18,
+                      icon: Icon(
+                        _approvalExpanded
+                            ? Icons.expand_less_rounded
+                            : Icons.expand_more_rounded,
+                      ),
+                    ),
+                  ],
+                  const SizedBox(width: 8),
                   _StatusPill(label: request.kind, compact: compact),
                 ],
               ),
+              if (_approvalExpanded) ...[
+                const SizedBox(height: 8),
+                ...approvalDetailLines.map(
+                  (line) => Padding(
+                    padding: const EdgeInsets.only(bottom: 4),
+                    child: Text(
+                      line,
+                      style: theme.textTheme.bodySmall?.copyWith(
+                        color: secondaryTextColor(theme),
+                      ),
+                    ),
+                  ),
+                ),
+              ],
               const SizedBox(height: 8),
               SingleChildScrollView(
                 scrollDirection: Axis.horizontal,
                 child: Row(
                   children: [
-                    for (var index = 0; index < actionButtons.length; index++)
-                      ...[
-                        if (index > 0) const SizedBox(width: 8),
-                        actionButtons[index],
-                      ],
+                    for (
+                      var index = 0;
+                      index < actionButtons.length;
+                      index++
+                    ) ...[
+                      if (index > 0) const SizedBox(width: 8),
+                      actionButtons[index],
+                    ],
                   ],
                 ),
               ),
@@ -3073,7 +3202,8 @@ class _QueuedComposerPanel extends StatelessWidget {
         children: [
           Text(
             strings.text('Queued Prompts', 'Queued Prompts'),
-            style: (workspaceStyle
+            style:
+                (workspaceStyle
                         ? theme.textTheme.titleMedium
                         : theme.textTheme.titleLarge)
                     ?.copyWith(fontWeight: FontWeight.w700),
@@ -3170,7 +3300,8 @@ class _QueuedComposerCard extends StatelessWidget {
                   : submission.preview,
               maxLines: compact ? 3 : 4,
               overflow: TextOverflow.ellipsis,
-              style: (compact
+              style:
+                  (compact
                           ? theme.textTheme.titleSmall
                           : theme.textTheme.titleMedium)
                       ?.copyWith(fontWeight: FontWeight.w700, height: 1.2),
@@ -3228,7 +3359,7 @@ class _QueuedComposerCard extends StatelessWidget {
                           unawaited(onEdit(submission));
                         },
                   icon: const Icon(Icons.edit_outlined),
-                  label: Text(strings.text('Edit', 'Edit')), 
+                  label: Text(strings.text('Edit', 'Edit')),
                   style: OutlinedButton.styleFrom(
                     visualDensity: VisualDensity.compact,
                     tapTargetSize: MaterialTapTargetSize.shrinkWrap,
@@ -3245,7 +3376,7 @@ class _QueuedComposerCard extends StatelessWidget {
                           unawaited(onDelete(submission));
                         },
                   icon: const Icon(Icons.delete_outline),
-                  label: Text(strings.text('Delete', 'Delete')), 
+                  label: Text(strings.text('Delete', 'Delete')),
                   style: OutlinedButton.styleFrom(
                     visualDensity: VisualDensity.compact,
                     tapTargetSize: MaterialTapTargetSize.shrinkWrap,
@@ -3690,7 +3821,9 @@ class _ComposerDock extends StatelessWidget {
         child: Padding(
           padding: EdgeInsets.fromLTRB(
             compactWorkspace ? 10 : 16,
-            queuedSubmissionCount > 0 ? (compactWorkspace ? 2 : 6) : (compactWorkspace ? 4 : 14),
+            queuedSubmissionCount > 0
+                ? (compactWorkspace ? 2 : 6)
+                : (compactWorkspace ? 4 : 14),
             compactWorkspace ? 10 : 16,
             compactWorkspace ? 8 : 16,
           ),
@@ -3746,7 +3879,10 @@ class _QueuedComposerDockTrigger extends StatelessWidget {
                   ),
                   child: Text(
                     label.trim().isEmpty
-                        ? context.strings.text('Queued prompts', 'Queued prompts')
+                        ? context.strings.text(
+                            'Queued prompts',
+                            'Queued prompts',
+                          )
                         : label.trim(),
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
@@ -3902,13 +4038,13 @@ class _PendingRequestDialogState extends State<_PendingRequestDialog> {
           onPressed: () {
             Navigator.of(context).pop();
           },
-          child: Text(strings.text('Close', 'Close')), 
+          child: Text(strings.text('Close', 'Close')),
         ),
         FilledButton(
           onPressed: () {
             Navigator.of(context).pop(_collectSubmission());
           },
-          child: Text(strings.text('Submit', 'Submit')), 
+          child: Text(strings.text('Submit', 'Submit')),
         ),
       ],
     );
