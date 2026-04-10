@@ -15,6 +15,9 @@ class AppPreferencesController extends ChangeNotifier {
   Locale? get locale => _preferences.locale;
   AppThemePreference get themePreference => _preferences.theme;
   AppLanguagePreference get languagePreference => _preferences.language;
+  bool get notifyOnApprovalRequest => _preferences.notifyOnApprovalRequest;
+  bool get notifyOnTurnCompleted => _preferences.notifyOnTurnCompleted;
+  bool get notifyOnRealtimeError => _preferences.notifyOnRealtimeError;
   Set<String> get archivedThreadIds => _preferences.archivedThreadIds;
   bool get loaded => _loaded;
 
@@ -38,6 +41,33 @@ class AppPreferencesController extends ChangeNotifier {
       return;
     }
     _preferences = _preferences.copyWith(language: value);
+    notifyListeners();
+    await _store.save(_preferences);
+  }
+
+  Future<void> setNotifyOnApprovalRequest(bool value) async {
+    if (value == _preferences.notifyOnApprovalRequest) {
+      return;
+    }
+    _preferences = _preferences.copyWith(notifyOnApprovalRequest: value);
+    notifyListeners();
+    await _store.save(_preferences);
+  }
+
+  Future<void> setNotifyOnTurnCompleted(bool value) async {
+    if (value == _preferences.notifyOnTurnCompleted) {
+      return;
+    }
+    _preferences = _preferences.copyWith(notifyOnTurnCompleted: value);
+    notifyListeners();
+    await _store.save(_preferences);
+  }
+
+  Future<void> setNotifyOnRealtimeError(bool value) async {
+    if (value == _preferences.notifyOnRealtimeError) {
+      return;
+    }
+    _preferences = _preferences.copyWith(notifyOnRealtimeError: value);
     notifyListeners();
     await _store.save(_preferences);
   }

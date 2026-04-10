@@ -16,12 +16,23 @@ void main() {
     expect(preferences.isThreadArchived('thread-3'), isFalse);
   });
 
+  test('AppPreferences enables all notification toggles by default', () {
+    final preferences = AppPreferences();
+
+    expect(preferences.notifyOnApprovalRequest, isTrue);
+    expect(preferences.notifyOnTurnCompleted, isTrue);
+    expect(preferences.notifyOnRealtimeError, isTrue);
+  });
+
   test(
     'SharedPrefsAppPreferencesStore loads and saves archived thread ids',
     () async {
       SharedPreferences.setMockInitialValues({
         'app.theme': 'dark',
         'app.language': 'chinese',
+        'app.notifyOnApprovalRequest': false,
+        'app.notifyOnTurnCompleted': true,
+        'app.notifyOnRealtimeError': false,
         'app.archivedThreadIds': ['thread-b', 'thread-a'],
       });
       final store = SharedPrefsAppPreferencesStore();
@@ -30,12 +41,18 @@ void main() {
 
       expect(loaded.theme, AppThemePreference.dark);
       expect(loaded.language, AppLanguagePreference.chinese);
+      expect(loaded.notifyOnApprovalRequest, isFalse);
+      expect(loaded.notifyOnTurnCompleted, isTrue);
+      expect(loaded.notifyOnRealtimeError, isFalse);
       expect(loaded.archivedThreadIds, {'thread-a', 'thread-b'});
 
       await store.save(
         AppPreferences(
           theme: AppThemePreference.light,
           language: AppLanguagePreference.english,
+          notifyOnApprovalRequest: true,
+          notifyOnTurnCompleted: false,
+          notifyOnRealtimeError: true,
           archivedThreadIds: {'thread-2', 'thread-1'},
         ),
       );
@@ -43,6 +60,9 @@ void main() {
       final prefs = await SharedPreferences.getInstance();
       expect(prefs.getString('app.theme'), 'light');
       expect(prefs.getString('app.language'), 'english');
+      expect(prefs.getBool('app.notifyOnApprovalRequest'), isTrue);
+      expect(prefs.getBool('app.notifyOnTurnCompleted'), isFalse);
+      expect(prefs.getBool('app.notifyOnRealtimeError'), isTrue);
       expect(prefs.getStringList('app.archivedThreadIds'), [
         'thread-1',
         'thread-2',
@@ -64,6 +84,24 @@ void main() {
 
     expect(controller.isThreadArchived('thread-1'), isFalse);
     expect(store.savedPreferences.archivedThreadIds, isEmpty);
+  });
+
+  test('AppPreferencesController updates notification toggles', () async {
+    final store = _MemoryPreferencesStore();
+    final controller = AppPreferencesController(store);
+
+    await controller.load();
+    await controller.setNotifyOnApprovalRequest(false);
+    await controller.setNotifyOnTurnCompleted(false);
+    await controller.setNotifyOnRealtimeError(false);
+
+    expect(controller.notifyOnApprovalRequest, isFalse);
+    expect(controller.notifyOnTurnCompleted, isFalse);
+    expect(controller.notifyOnRealtimeError, isFalse);
+
+    expect(store.savedPreferences.notifyOnApprovalRequest, isFalse);
+    expect(store.savedPreferences.notifyOnTurnCompleted, isFalse);
+    expect(store.savedPreferences.notifyOnRealtimeError, isFalse);
   });
 }
 

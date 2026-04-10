@@ -15,6 +15,7 @@ import '../services/app_preferences_controller.dart';
 import '../services/bridge_config_store.dart';
 import '../services/bridge_realtime_client.dart';
 import '../services/codex_repository.dart';
+import '../services/local_notification_service.dart';
 import '../services/realtime_event_helpers.dart';
 import '../services/thread_list_projection.dart';
 import '../services/thread_state_projection.dart';
@@ -28,10 +29,12 @@ class ThreadListScreen extends StatefulWidget {
     super.key,
     required this.configStore,
     required this.preferencesController,
+    required this.notificationService,
   });
 
   final BridgeConfigStore configStore;
   final AppPreferencesController preferencesController;
+  final LocalNotificationService notificationService;
 
   @override
   State<ThreadListScreen> createState() => _ThreadListScreenState();
@@ -56,6 +59,8 @@ class _ThreadListScreenState extends State<ThreadListScreen> {
   CodexRealtimeSession? _realtimeSession;
   StreamSubscription<BridgeRealtimeEvent>? _realtimeSubscription;
   Timer? _realtimeRefreshDebounce;
+  final List<String> _recentNotificationEventKeys = <String>[];
+  final Set<String> _recentNotificationEventKeySet = <String>{};
 
   @override
   void initState() {
@@ -298,6 +303,13 @@ class _ThreadListScreenState extends State<ThreadListScreen> {
         'autoFollow': previousSelectedThreadId != _selectedThreadId,
       },
     );
+    unawaited(
+      _maybeNotifyForEvent(
+        event,
+        previousById: previousById,
+        projectedThreads: sortedThreads,
+      ),
+    );
 
     if (!_shouldRefreshThreadList(event)) {
       return;
@@ -307,6 +319,120 @@ class _ThreadListScreenState extends State<ThreadListScreen> {
     _realtimeRefreshDebounce = Timer(const Duration(milliseconds: 420), () {
       unawaited(_refreshThreadsQuietly());
     });
+  }
+
+  Future<void> _maybeNotifyForEvent(
+    BridgeRealtimeEvent event, {
+    required Map<String, CodexThreadSummary> previousById,
+    required List<CodexThreadSummary> projectedThreads,
+  }) async {
+    final preferences = widget.preferencesController;
+    final eventType = event.type;
+
+    var notify = false;
+    late String title;
+    late String body;
+
+    final threadTitle = _resolveEventThreadTitle(
+      event,
+      previousById: previousById,
+      projectedThreads: projectedThreads,
+    );
+
+    if (eventType == 'approval.request' &&
+        preferences.notifyOnApprovalRequest) {
+      notify = true;
+      title = 'Approval required';
+      body = threadTitle == null
+          ? 'A session is waiting for approval.'
+          : 'Session "$threadTitle" is waiting for approval.';
+    } else if (eventType == 'turn.completed' &&
+        preferences.notifyOnTurnCompleted) {
+      notify = true;
+      title = 'Final answer ready';
+      body = threadTitle == null
+          ? 'A turn has produced a final answer.'
+          : 'Session "$threadTitle" has a final answer.';
+    } else if (eventType == 'thread.realtime.error' &&
+        preferences.notifyOnRealtimeError) {
+      notify = true;
+      title = 'Session error';
+      final description = event.description.trim();
+      if (threadTitle != null) {
+        body = description.isEmpty
+            ? 'Session "$threadTitle" reported an error.'
+            : 'Session "$threadTitle": $description';
+      } else {
+        body = description.isEmpty
+            ? 'A session reported an error.'
+            : description;
+      }
+    }
+
+    if (!notify) {
+      return;
+    }
+
+    final eventKey = _notificationEventKey(event);
+    if (!_registerNotificationEventKey(eventKey)) {
+      return;
+    }
+
+    await widget.notificationService.show(
+      title: title,
+      body: body,
+      tag: eventKey,
+    );
+  }
+
+  String? _resolveEventThreadTitle(
+    BridgeRealtimeEvent event, {
+    required Map<String, CodexThreadSummary> previousById,
+    required List<CodexThreadSummary> projectedThreads,
+  }) {
+    final eventThreadId = realtimeEventThreadId(event);
+    if (eventThreadId == null || eventThreadId.isEmpty) {
+      return null;
+    }
+
+    for (final thread in projectedThreads) {
+      if (thread.id == eventThreadId) {
+        return thread.title;
+      }
+    }
+    return previousById[eventThreadId]?.title;
+  }
+
+  String _notificationEventKey(BridgeRealtimeEvent event) {
+    final occurredAt = realtimeEventOccurredAt(
+      event,
+    ).toUtc().millisecondsSinceEpoch;
+    return [
+      event.type,
+      realtimeEventThreadId(event) ?? '',
+      realtimeEventTurnId(event) ?? '',
+      realtimeEventRequestId(event) ?? '',
+      realtimeEventItemId(event) ?? '',
+      occurredAt.toString(),
+    ].join('|');
+  }
+
+  bool _registerNotificationEventKey(String key) {
+    if (_recentNotificationEventKeySet.contains(key)) {
+      return false;
+    }
+    _recentNotificationEventKeySet.add(key);
+    _recentNotificationEventKeys.add(key);
+
+    const maxEventKeys = 120;
+    if (_recentNotificationEventKeys.length > maxEventKeys) {
+      final overflow = _recentNotificationEventKeys.length - maxEventKeys;
+      for (var index = 0; index < overflow; index += 1) {
+        final removed = _recentNotificationEventKeys.removeAt(0);
+        _recentNotificationEventKeySet.remove(removed);
+      }
+    }
+    return true;
   }
 
   String? _nextSelectedThreadIdForRealtimeEvent(

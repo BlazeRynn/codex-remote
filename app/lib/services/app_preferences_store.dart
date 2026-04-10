@@ -11,6 +11,9 @@ abstract class AppPreferencesStore {
 class SharedPrefsAppPreferencesStore implements AppPreferencesStore {
   static const _themeKey = 'app.theme';
   static const _languageKey = 'app.language';
+  static const _notifyOnApprovalRequestKey = 'app.notifyOnApprovalRequest';
+  static const _notifyOnTurnCompletedKey = 'app.notifyOnTurnCompleted';
+  static const _notifyOnRealtimeErrorKey = 'app.notifyOnRealtimeError';
   static const _archivedThreadIdsKey = 'app.archivedThreadIds';
 
   @override
@@ -19,6 +22,10 @@ class SharedPrefsAppPreferencesStore implements AppPreferencesStore {
     return AppPreferences(
       theme: _parseTheme(prefs.getString(_themeKey)),
       language: _parseLanguage(prefs.getString(_languageKey)),
+      notifyOnApprovalRequest:
+          prefs.getBool(_notifyOnApprovalRequestKey) ?? true,
+      notifyOnTurnCompleted: prefs.getBool(_notifyOnTurnCompletedKey) ?? true,
+      notifyOnRealtimeError: prefs.getBool(_notifyOnRealtimeErrorKey) ?? true,
       archivedThreadIds: Set<String>.from(
         prefs.getStringList(_archivedThreadIdsKey) ?? const <String>[],
       ),
@@ -32,6 +39,18 @@ class SharedPrefsAppPreferencesStore implements AppPreferencesStore {
       ..sort((left, right) => left.compareTo(right));
     await prefs.setString(_themeKey, preferences.theme.name);
     await prefs.setString(_languageKey, preferences.language.name);
+    await prefs.setBool(
+      _notifyOnApprovalRequestKey,
+      preferences.notifyOnApprovalRequest,
+    );
+    await prefs.setBool(
+      _notifyOnTurnCompletedKey,
+      preferences.notifyOnTurnCompleted,
+    );
+    await prefs.setBool(
+      _notifyOnRealtimeErrorKey,
+      preferences.notifyOnRealtimeError,
+    );
     await prefs.setStringList(_archivedThreadIdsKey, archivedThreadIds);
   }
 

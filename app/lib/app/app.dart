@@ -8,6 +8,7 @@ import '../screens/thread_list_screen.dart';
 import '../services/app_preferences_controller.dart';
 import '../services/app_preferences_store.dart';
 import '../services/bridge_config_store.dart';
+import '../services/local_notification_service.dart';
 import 'app_strings.dart';
 import 'theme.dart';
 
@@ -16,10 +17,12 @@ class CodexMobileApp extends StatefulWidget {
     super.key,
     required this.configStore,
     this.preferencesStore,
+    this.notificationService,
   });
 
   final BridgeConfigStore configStore;
   final AppPreferencesStore? preferencesStore;
+  final LocalNotificationService? notificationService;
 
   @override
   State<CodexMobileApp> createState() => _CodexMobileAppState();
@@ -27,6 +30,7 @@ class CodexMobileApp extends StatefulWidget {
 
 class _CodexMobileAppState extends State<CodexMobileApp> {
   late final AppPreferencesController _preferencesController;
+  late final LocalNotificationService _notificationService;
 
   @override
   void initState() {
@@ -34,7 +38,10 @@ class _CodexMobileAppState extends State<CodexMobileApp> {
     _preferencesController = AppPreferencesController(
       widget.preferencesStore ?? SharedPrefsAppPreferencesStore(),
     );
+    _notificationService =
+        widget.notificationService ?? LocalNotificationService();
     unawaited(_preferencesController.load());
+    unawaited(_notificationService.initialize());
   }
 
   @override
@@ -71,10 +78,11 @@ class _CodexMobileAppState extends State<CodexMobileApp> {
             GlobalCupertinoLocalizations.delegate,
           ],
           onGenerateTitle: (context) =>
-              context.strings.text('Codex Control', 'Codex 控制台'),
+              context.strings.text('Codex Control', 'Codex 鎺у埗鍙?'),
           home: ThreadListScreen(
             configStore: widget.configStore,
             preferencesController: _preferencesController,
+            notificationService: _notificationService,
           ),
         );
       },

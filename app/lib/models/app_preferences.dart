@@ -8,6 +8,9 @@ class AppPreferences {
   AppPreferences({
     this.theme = AppThemePreference.system,
     this.language = AppLanguagePreference.system,
+    this.notifyOnApprovalRequest = true,
+    this.notifyOnTurnCompleted = true,
+    this.notifyOnRealtimeError = true,
     Set<String> archivedThreadIds = const <String>{},
   }) : archivedThreadIds = Set.unmodifiable(
          _normalizeArchivedThreadIds(archivedThreadIds),
@@ -15,6 +18,9 @@ class AppPreferences {
 
   final AppThemePreference theme;
   final AppLanguagePreference language;
+  final bool notifyOnApprovalRequest;
+  final bool notifyOnTurnCompleted;
+  final bool notifyOnRealtimeError;
   final Set<String> archivedThreadIds;
 
   ThemeMode get themeMode {
@@ -41,11 +47,20 @@ class AppPreferences {
   AppPreferences copyWith({
     AppThemePreference? theme,
     AppLanguagePreference? language,
+    bool? notifyOnApprovalRequest,
+    bool? notifyOnTurnCompleted,
+    bool? notifyOnRealtimeError,
     Set<String>? archivedThreadIds,
   }) {
     return AppPreferences(
       theme: theme ?? this.theme,
       language: language ?? this.language,
+      notifyOnApprovalRequest:
+          notifyOnApprovalRequest ?? this.notifyOnApprovalRequest,
+      notifyOnTurnCompleted:
+          notifyOnTurnCompleted ?? this.notifyOnTurnCompleted,
+      notifyOnRealtimeError:
+          notifyOnRealtimeError ?? this.notifyOnRealtimeError,
       archivedThreadIds: archivedThreadIds ?? this.archivedThreadIds,
     );
   }

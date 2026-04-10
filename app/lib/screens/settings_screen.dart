@@ -120,6 +120,12 @@ class _BridgeSettingsScreenState extends State<BridgeSettingsScreen> {
     final serverFieldsEnabled = !_saving;
     final themePreference = widget.preferencesController.themePreference;
     final languagePreference = widget.preferencesController.languagePreference;
+    final notifyOnApprovalRequest =
+        widget.preferencesController.notifyOnApprovalRequest;
+    final notifyOnTurnCompleted =
+        widget.preferencesController.notifyOnTurnCompleted;
+    final notifyOnRealtimeError =
+        widget.preferencesController.notifyOnRealtimeError;
 
     return Scaffold(
       appBar: AppBar(title: Text(strings.text('Codex settings', 'Codex 设置'))),
@@ -200,6 +206,73 @@ class _BridgeSettingsScreenState extends State<BridgeSettingsScreen> {
                     : (selection) {
                         widget.preferencesController.setLanguagePreference(
                           selection.first,
+                        );
+                        setState(() {});
+                      },
+              ),
+              const SizedBox(height: 18),
+              Text(
+                strings.text('Notifications', 'Notifications'),
+                style: Theme.of(context).textTheme.titleMedium,
+              ),
+              const SizedBox(height: 8),
+              SwitchListTile.adaptive(
+                contentPadding: EdgeInsets.zero,
+                title: Text(
+                  strings.text('Approval requests', 'Approval requests'),
+                ),
+                subtitle: Text(
+                  strings.text(
+                    'Notify when a session needs approval.',
+                    'Notify when a session needs approval.',
+                  ),
+                ),
+                value: notifyOnApprovalRequest,
+                onChanged: _saving
+                    ? null
+                    : (value) {
+                        widget.preferencesController.setNotifyOnApprovalRequest(
+                          value,
+                        );
+                        setState(() {});
+                      },
+              ),
+              SwitchListTile.adaptive(
+                contentPadding: EdgeInsets.zero,
+                title: Text(
+                  strings.text('Turn final answer', 'Turn final answer'),
+                ),
+                subtitle: Text(
+                  strings.text(
+                    'Notify when a turn reaches final answer.',
+                    'Notify when a turn reaches final answer.',
+                  ),
+                ),
+                value: notifyOnTurnCompleted,
+                onChanged: _saving
+                    ? null
+                    : (value) {
+                        widget.preferencesController.setNotifyOnTurnCompleted(
+                          value,
+                        );
+                        setState(() {});
+                      },
+              ),
+              SwitchListTile.adaptive(
+                contentPadding: EdgeInsets.zero,
+                title: Text(strings.text('Realtime errors', 'Realtime errors')),
+                subtitle: Text(
+                  strings.text(
+                    'Notify when realtime stream reports an error.',
+                    'Notify when realtime stream reports an error.',
+                  ),
+                ),
+                value: notifyOnRealtimeError,
+                onChanged: _saving
+                    ? null
+                    : (value) {
+                        widget.preferencesController.setNotifyOnRealtimeError(
+                          value,
                         );
                         setState(() {});
                       },
