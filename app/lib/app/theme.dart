@@ -3,7 +3,7 @@ import 'package:flutter/material.dart';
 import 'app_typography.dart';
 
 ThemeData buildAppTheme(Brightness brightness, {Locale? locale}) {
-  const seed = Color(0xFF0F766E);
+  const seed = Color(0xFF2563EB);
   final base = ThemeData(
     useMaterial3: true,
     brightness: brightness,
@@ -39,14 +39,24 @@ ThemeData buildAppTheme(Brightness brightness, {Locale? locale}) {
   }
 
   final colorScheme = base.colorScheme.copyWith(
-    surface: const Color(0xFFF5F4EE),
-    surfaceContainerHighest: const Color(0xFFE6E5DB),
+    primary: const Color(0xFF2563EB),
+    onPrimary: Colors.white,
+    secondary: const Color(0xFF0F766E),
+    onSecondary: Colors.white,
+    tertiary: const Color(0xFF65A30D),
+    onTertiary: Colors.white,
+    surface: const Color(0xFFFFFFFF),
+    surfaceContainerHighest: const Color(0xFFEEF4FA),
+    onSurface: const Color(0xFF102033),
+    onSurfaceVariant: const Color(0xFF5B6B7F),
+    outline: const Color(0xFFB8C6D8),
+    outlineVariant: const Color(0xFFD9E2EC),
   );
 
   return applyAppTypography(
     base.copyWith(
       colorScheme: colorScheme,
-      scaffoldBackgroundColor: const Color(0xFFF3F1E8),
+      scaffoldBackgroundColor: const Color(0xFFF8FAFC),
       appBarTheme: const AppBarTheme(
         centerTitle: false,
         elevation: 0,
@@ -55,8 +65,10 @@ ThemeData buildAppTheme(Brightness brightness, {Locale? locale}) {
       inputDecorationTheme: const InputDecorationTheme(
         border: OutlineInputBorder(),
         filled: true,
-        fillColor: Colors.white,
+        fillColor: Color(0xFFFDFEFF),
       ),
+      cardColor: const Color(0xFFFFFFFF),
+      dividerColor: const Color(0xFFD9E2EC),
     ),
     locale: locale,
   );

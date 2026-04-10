@@ -19,16 +19,23 @@ ThemeData buildDesktopWorkspaceTheme(ThemeData base, {Locale? locale}) {
           onSurface: Color(0xFFE6EDF3),
         )
       : const ColorScheme.light(
-          primary: Color(0xFF0D5CAB),
+          primary: Color(0xFF2563EB),
           onPrimary: Colors.white,
           secondary: Color(0xFF0F766E),
           onSecondary: Colors.white,
-          tertiary: Color(0xFF557A46),
+          tertiary: Color(0xFF65A30D),
           onTertiary: Colors.white,
           error: Color(0xFFBA1A1A),
           onError: Colors.white,
-          surface: Color(0xFFF5F7FB),
-          onSurface: Color(0xFF18212B),
+          surface: Color(0xFFFFFFFF),
+          onSurface: Color(0xFF102033),
+        ).copyWith(
+          surfaceContainerHighest: const Color(0xFFEEF4FA),
+          surfaceContainerHigh: const Color(0xFFF3F7FB),
+          surfaceContainer: const Color(0xFFF8FAFC),
+          onSurfaceVariant: const Color(0xFF5B6B7F),
+          outline: const Color(0xFFB8C6D8),
+          outlineVariant: const Color(0xFFD9E2EC),
         );
 
   final textTheme = base.textTheme.apply(
@@ -42,29 +49,29 @@ ThemeData buildDesktopWorkspaceTheme(ThemeData base, {Locale? locale}) {
       colorScheme: colorScheme,
       scaffoldBackgroundColor: isDark
           ? const Color(0xFF111317)
-          : const Color(0xFFF0F3F8),
-      canvasColor: isDark ? const Color(0xFF111317) : const Color(0xFFF0F3F8),
-      cardColor: isDark ? const Color(0xFF181B20) : const Color(0xFFF5F7FB),
-      dividerColor: isDark ? const Color(0xFF2A2F3A) : const Color(0xFFD7DFEA),
+          : const Color(0xFFF8FAFC),
+      canvasColor: isDark ? const Color(0xFF111317) : const Color(0xFFF8FAFC),
+      cardColor: isDark ? const Color(0xFF181B20) : const Color(0xFFFFFFFF),
+      dividerColor: isDark ? const Color(0xFF2A2F3A) : const Color(0xFFD9E2EC),
       textTheme: textTheme,
       appBarTheme: base.appBarTheme.copyWith(
         backgroundColor: isDark
             ? const Color(0xFF111317)
-            : const Color(0xFFF0F3F8),
+            : const Color(0xFFF8FAFC),
         foregroundColor: colorScheme.onSurface,
       ),
       inputDecorationTheme: base.inputDecorationTheme.copyWith(
-        fillColor: isDark ? const Color(0xFF181B20) : Colors.white,
+        fillColor: isDark ? const Color(0xFF181B20) : const Color(0xFFFDFEFF),
         border: OutlineInputBorder(
           borderRadius: BorderRadius.circular(14),
           borderSide: BorderSide(
-            color: isDark ? const Color(0xFF2A2F3A) : const Color(0xFFD7DFEA),
+            color: isDark ? const Color(0xFF2A2F3A) : const Color(0xFFD9E2EC),
           ),
         ),
         enabledBorder: OutlineInputBorder(
           borderRadius: BorderRadius.circular(14),
           borderSide: BorderSide(
-            color: isDark ? const Color(0xFF2A2F3A) : const Color(0xFFD7DFEA),
+            color: isDark ? const Color(0xFF2A2F3A) : const Color(0xFFD9E2EC),
           ),
         ),
         focusedBorder: OutlineInputBorder(
@@ -72,10 +79,10 @@ ThemeData buildDesktopWorkspaceTheme(ThemeData base, {Locale? locale}) {
           borderSide: BorderSide(color: colorScheme.primary),
         ),
         labelStyle: TextStyle(
-          color: isDark ? const Color(0xFFAAB5C3) : const Color(0xFF607080),
+          color: isDark ? const Color(0xFFAAB5C3) : const Color(0xFF5B6B7F),
         ),
         hintStyle: TextStyle(
-          color: isDark ? const Color(0xFF7D8590) : const Color(0xFF7A8897),
+          color: isDark ? const Color(0xFF7D8590) : const Color(0xFF73859A),
         ),
       ),
       filledButtonTheme: FilledButtonThemeData(
@@ -90,12 +97,12 @@ ThemeData buildDesktopWorkspaceTheme(ThemeData base, {Locale? locale}) {
             if (states.contains(WidgetState.selected)) {
               return colorScheme.primary.withValues(alpha: 0.18);
             }
-            return isDark ? const Color(0xFF181B20) : Colors.white;
+            return isDark ? const Color(0xFF181B20) : const Color(0xFFFDFEFF);
           }),
           foregroundColor: WidgetStatePropertyAll(colorScheme.onSurface),
           side: WidgetStatePropertyAll(
             BorderSide(
-              color: isDark ? const Color(0xFF2A2F3A) : const Color(0xFFD7DFEA),
+              color: isDark ? const Color(0xFF2A2F3A) : const Color(0xFFD9E2EC),
             ),
           ),
         ),
@@ -119,21 +126,21 @@ Color panelBackgroundColor(ThemeData theme) {
   if (theme.brightness == Brightness.dark) {
     return const Color(0xFF181B20);
   }
-  return theme.colorScheme.surface;
+  return const Color(0xFFFFFFFF);
 }
 
 Color mutedPanelBackgroundColor(ThemeData theme) {
   if (theme.brightness == Brightness.dark) {
     return const Color(0xFF13161B);
   }
-  return theme.colorScheme.surfaceContainerHighest.withValues(alpha: 0.46);
+  return theme.colorScheme.surfaceContainerHighest.withValues(alpha: 0.78);
 }
 
 Color borderColor(ThemeData theme) {
   if (theme.brightness == Brightness.dark) {
     return theme.dividerColor;
   }
-  return Colors.black.withValues(alpha: 0.05);
+  return theme.dividerColor;
 }
 
 Color selectionFillColor(ThemeData theme) {
@@ -147,9 +154,9 @@ Color secondaryTextColor(ThemeData theme) {
   if (theme.brightness == Brightness.dark) {
     return const Color(0xFFAAB5C3);
   }
-  return Colors.black.withValues(alpha: 0.62);
+  return theme.colorScheme.onSurfaceVariant;
 }
 
 double panelRadius(ThemeData theme) {
-  return theme.brightness == Brightness.dark ? 18 : 28;
+  return theme.brightness == Brightness.dark ? 18 : 24;
 }
