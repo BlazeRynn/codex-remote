@@ -547,7 +547,7 @@ class _UserMessagePartView extends StatelessWidget {
           return _MessageAttachmentView(
             icon: Icons.attach_file_rounded,
             label: part.name ?? _basename(part.path),
-            caption: part.path,
+            caption: _fileMentionCaption(part),
             workspaceStyle: workspaceStyle,
           );
         }
@@ -1785,6 +1785,15 @@ class _PlanState {
 bool _isLocalFileMention(UserMessagePart part) {
   final path = part.path?.trim() ?? '';
   return path.isNotEmpty && !path.contains('://');
+}
+
+String? _fileMentionCaption(UserMessagePart part) {
+  final basename = _basename(part.path);
+  if (basename.isEmpty) {
+    return null;
+  }
+  final label = (part.name ?? '').trim();
+  return label == basename ? null : basename;
 }
 
 String _basename(String? value) {

@@ -115,7 +115,7 @@ class _FileChangeCardState extends State<FileChangeCard> {
                     const SizedBox(width: 10),
                     Expanded(
                       child: Text(
-                        widget.entry.path,
+                        _basename(widget.entry.path),
                         maxLines: 1,
                         overflow: TextOverflow.ellipsis,
                         style: pathStyle,
@@ -853,4 +853,16 @@ String _localizedText(BuildContext context, String english, String chinese) {
     return english;
   }
   return strings.text(english, chinese);
+}
+
+String _basename(String value) {
+  final normalized = value.trim();
+  if (normalized.isEmpty) {
+    return '';
+  }
+  final segments = normalized
+      .split(RegExp(r'[\\/]'))
+      .where((segment) => segment.trim().isNotEmpty)
+      .toList(growable: false);
+  return segments.isEmpty ? normalized : segments.last;
 }
