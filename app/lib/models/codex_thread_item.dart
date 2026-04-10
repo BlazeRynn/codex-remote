@@ -97,8 +97,8 @@ class CodexThreadItem {
     return CodexThreadItem(
       id: readString(json, const ['id']),
       type: readString(json, const ['type'], fallback: 'item'),
-      title: readString(json, const ['title'], fallback: 'Operation'),
-      body: readString(json, const ['body']),
+      title: _readTransferString(json, 'title', fallback: 'Operation'),
+      body: _readTransferString(json, 'body'),
       status: readString(json, const ['status'], fallback: 'unknown'),
       actor: readString(json, const ['actor'], fallback: 'bridge'),
       createdAt: readDate(json, const ['createdAt']),
@@ -116,6 +116,18 @@ class CodexThreadItem {
         ? 'Operation'
         : '${normalized[0].toUpperCase()}${normalized.substring(1)}';
   }
+}
+
+String _readTransferString(
+  Map<String, dynamic> json,
+  String key, {
+  String fallback = '',
+}) {
+  final value = json[key];
+  if (value == null) {
+    return fallback;
+  }
+  return value.toString();
 }
 
 const _threadItemTransferKey = '__codexThreadItemTransfer__';

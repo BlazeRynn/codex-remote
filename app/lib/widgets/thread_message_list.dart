@@ -51,7 +51,7 @@ class ThreadMessageList extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    final entries = projection.entries;
+    final renderNodes = _buildRenderNodes(projection.entries);
     final padding = EdgeInsets.fromLTRB(
       16,
       workspaceStyle ? 2 : 4,
@@ -61,7 +61,7 @@ class ThreadMessageList extends StatelessWidget {
     final stateChild = _buildStateChild();
     final itemCount =
         (showLiveStatus ? 1 : 0) +
-        (stateChild == null ? entries.length : 1) +
+        (stateChild == null ? renderNodes.length : 1) +
         (footer == null ? 0 : 1);
 
     return ColoredBox(
@@ -72,59 +72,72 @@ class ThreadMessageList extends StatelessWidget {
             color: theme.colorScheme.primary,
             backgroundColor: mutedPanelBackgroundColor(theme),
             onRefresh: onRefresh,
-            child: NotificationListener<ScrollNotification>(
-              onNotification: onScrollNotification,
-              child: ListView.builder(
-                controller: scrollController,
-                physics: BottomAnchoredScrollPhysics(
-                  stickToBottom: stickToBottom,
-                ),
-                keyboardDismissBehavior:
-                    ScrollViewKeyboardDismissBehavior.onDrag,
-                padding: padding,
-                itemCount: itemCount,
-                itemBuilder: (context, index) {
-                  var cursor = index;
-                  if (showLiveStatus) {
-                    if (cursor == 0) {
-                      return Padding(
-                        padding: const EdgeInsets.only(bottom: 16),
-                        child: _ThreadMessageStatusBar(
-                          stateLabel: liveStateLabel,
-                          message: liveMessage,
-                          hasActiveTurn: hasActiveTurn,
+            child: Scrollbar(
+              controller: scrollController,
+              thumbVisibility: false,
+              trackVisibility: false,
+              child: NotificationListener<ScrollNotification>(
+                onNotification: onScrollNotification,
+                child: ListView.builder(
+                  controller: scrollController,
+                  physics: BottomAnchoredScrollPhysics(
+                    stickToBottom: stickToBottom,
+                  ),
+                  keyboardDismissBehavior:
+                      ScrollViewKeyboardDismissBehavior.onDrag,
+                  padding: padding,
+                  itemCount: itemCount,
+                  itemBuilder: (context, index) {
+                    var cursor = index;
+                    if (showLiveStatus) {
+                      if (cursor == 0) {
+                        return Padding(
+                          padding: const EdgeInsets.only(bottom: 16),
+                          child: _ThreadMessageStatusBar(
+                            stateLabel: liveStateLabel,
+                            message: liveMessage,
+                            hasActiveTurn: hasActiveTurn,
+                            workspaceStyle: workspaceStyle,
+                          ),
+                        );
+                      }
+                      cursor -= 1;
+                    }
+
+                    if (stateChild != null) {
+                      if (cursor == 0) {
+                        return stateChild;
+                      }
+                      cursor -= 1;
+                    } else {
+                      if (cursor < renderNodes.length) {
+                        final node = renderNodes[cursor];
+                        if (node.groupedEntries != null) {
+                          return _ThreadMessageOperationGroupCard(
+                            key: ValueKey(node.key),
+                            entries: node.groupedEntries!,
+                            workspaceStyle: workspaceStyle,
+                          );
+                        }
+                        return _ThreadMessageEntryView(
+                          key: ValueKey(node.key),
+                          entry: node.entry!,
                           workspaceStyle: workspaceStyle,
-                        ),
+                        );
+                      }
+                      cursor -= renderNodes.length;
+                    }
+
+                    if (footer != null && cursor == 0) {
+                      return Padding(
+                        padding: EdgeInsets.only(top: workspaceStyle ? 8 : 18),
+                        child: footer,
                       );
                     }
-                    cursor -= 1;
-                  }
 
-                  if (stateChild != null) {
-                    if (cursor == 0) {
-                      return stateChild;
-                    }
-                    cursor -= 1;
-                  } else {
-                    if (cursor < entries.length) {
-                      return _ThreadMessageEntryView(
-                        key: ValueKey(entries[cursor].key),
-                        entry: entries[cursor],
-                        workspaceStyle: workspaceStyle,
-                      );
-                    }
-                    cursor -= entries.length;
-                  }
-
-                  if (footer != null && cursor == 0) {
-                    return Padding(
-                      padding: EdgeInsets.only(top: workspaceStyle ? 8 : 18),
-                      child: footer,
-                    );
-                  }
-
-                  return const SizedBox.shrink();
-                },
+                    return const SizedBox.shrink();
+                  },
+                ),
               ),
             ),
           ),
@@ -159,6 +172,78 @@ class ThreadMessageList extends StatelessWidget {
   }
 }
 
+class _ThreadMessageRenderNode {
+  _ThreadMessageRenderNode.entry(this.entry)
+    : assert(entry != null),
+      groupedEntries = null,
+      key = entry!.key;
+
+  _ThreadMessageRenderNode.group(List<ThreadMessageListEntry> entries)
+    : assert(entries.length > 1),
+      entry = null,
+      groupedEntries = List.unmodifiable(entries),
+      key =
+          'operation-group:${entries.first.key}:${entries.last.key}:${entries.length}';
+
+  final String key;
+  final ThreadMessageListEntry? entry;
+  final List<ThreadMessageListEntry>? groupedEntries;
+}
+
+List<_ThreadMessageRenderNode> _buildRenderNodes(
+  List<ThreadMessageListEntry> entries,
+) {
+  if (entries.isEmpty) {
+    return const [];
+  }
+
+  final nodes = <_ThreadMessageRenderNode>[];
+  var index = 0;
+  while (index < entries.length) {
+    final entry = entries[index];
+    if (!_isOperationEntry(entry)) {
+      nodes.add(_ThreadMessageRenderNode.entry(entry));
+      index += 1;
+      continue;
+    }
+
+    final runStart = index;
+    while (index < entries.length && _isOperationEntry(entries[index])) {
+      index += 1;
+    }
+
+    final operationRun = entries.sublist(runStart, index);
+    final shouldCollapseRun = _shouldCollapseOperationRun(
+      entries,
+      runStart: runStart,
+      runEnd: index,
+    );
+    if (shouldCollapseRun) {
+      nodes.add(_ThreadMessageRenderNode.group(operationRun));
+      continue;
+    }
+
+    for (final operationEntry in operationRun) {
+      nodes.add(_ThreadMessageRenderNode.entry(operationEntry));
+    }
+  }
+  return nodes;
+}
+
+bool _isOperationEntry(ThreadMessageListEntry entry) {
+  return entry.kind == ThreadMessageEntryKind.commandExecution ||
+      entry.kind == ThreadMessageEntryKind.fileChange;
+}
+
+bool _shouldCollapseOperationRun(
+  List<ThreadMessageListEntry> entries, {
+  required int runStart,
+  required int runEnd,
+}) {
+  final runLength = runEnd - runStart;
+  return runLength > 1;
+}
+
 class BottomAnchoredScrollPhysics extends AlwaysScrollableScrollPhysics {
   const BottomAnchoredScrollPhysics({
     required this.stickToBottom,
@@ -182,7 +267,9 @@ class BottomAnchoredScrollPhysics extends AlwaysScrollableScrollPhysics {
     required bool isScrolling,
     required double velocity,
   }) {
-    if (stickToBottom && !isScrolling) {
+    final wasAtBottom =
+        (oldPosition.maxScrollExtent - oldPosition.pixels).abs() <= 1;
+    if (stickToBottom && !isScrolling && wasAtBottom) {
       final target = newPosition.maxScrollExtent < newPosition.minScrollExtent
           ? newPosition.minScrollExtent
           : newPosition.maxScrollExtent;
@@ -549,6 +636,130 @@ class _ThreadMessageFileChangePanel extends StatelessWidget {
   }
 }
 
+class _ThreadMessageOperationGroupCard extends StatefulWidget {
+  const _ThreadMessageOperationGroupCard({
+    super.key,
+    required this.entries,
+    required this.workspaceStyle,
+  });
+
+  final List<ThreadMessageListEntry> entries;
+  final bool workspaceStyle;
+
+  @override
+  State<_ThreadMessageOperationGroupCard> createState() =>
+      _ThreadMessageOperationGroupCardState();
+}
+
+class _ThreadMessageOperationGroupCardState
+    extends State<_ThreadMessageOperationGroupCard> {
+  bool _expanded = false;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final commandCount = widget.entries
+        .where((entry) => entry.kind == ThreadMessageEntryKind.commandExecution)
+        .length;
+    final fileCount = _groupedFileCount(widget.entries);
+    final latestTimestamp = _latestGroupedEntryTimestamp(widget.entries);
+
+    return Padding(
+      padding: EdgeInsets.only(bottom: widget.workspaceStyle ? 8 : 14),
+      child: _StandaloneMessageFrame(
+        workspaceStyle: widget.workspaceStyle,
+        backgroundColor: mutedPanelBackgroundColor(theme),
+        child: Material(
+          color: Colors.transparent,
+          child: InkWell(
+            borderRadius: BorderRadius.circular(
+              widget.workspaceStyle ? 16 : 18,
+            ),
+            onTap: () {
+              setState(() {
+                _expanded = !_expanded;
+              });
+            },
+            child: Padding(
+              padding: EdgeInsets.all(widget.workspaceStyle ? 10 : 12),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    crossAxisAlignment: CrossAxisAlignment.center,
+                    children: [
+                      Container(
+                        width: widget.workspaceStyle ? 22 : 24,
+                        height: widget.workspaceStyle ? 22 : 24,
+                        decoration: BoxDecoration(
+                          color: theme.colorScheme.primary.withValues(
+                            alpha: 0.08,
+                          ),
+                          borderRadius: BorderRadius.circular(8),
+                        ),
+                        alignment: Alignment.center,
+                        child: Icon(
+                          Icons.layers_rounded,
+                          size: widget.workspaceStyle ? 13 : 14,
+                          color: secondaryTextColor(theme),
+                        ),
+                      ),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: Text(
+                          _operationGroupSummaryText(
+                            context,
+                            commandCount: commandCount,
+                            fileCount: fileCount,
+                          ),
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: theme.textTheme.titleSmall?.copyWith(
+                            fontWeight: FontWeight.w700,
+                            height: 1.2,
+                          ),
+                        ),
+                      ),
+                      const SizedBox(width: 6),
+                      Icon(
+                        _expanded
+                            ? Icons.keyboard_arrow_up_rounded
+                            : Icons.keyboard_arrow_down_rounded,
+                        size: widget.workspaceStyle ? 18 : 20,
+                        color: secondaryTextColor(theme),
+                      ),
+                    ],
+                  ),
+                  if (_expanded) ...[
+                    SizedBox(height: widget.workspaceStyle ? 8 : 10),
+                    _ThreadMessageHeader(
+                      speaker: 'Codex',
+                      status: context.strings.text('Actions', '操作'),
+                      timestamp: context.strings.formatRelativeTime(
+                        latestTimestamp,
+                      ),
+                      workspaceStyle: widget.workspaceStyle,
+                    ),
+                    SizedBox(height: widget.workspaceStyle ? 8 : 10),
+                    Container(height: 1, color: borderColor(theme)),
+                    SizedBox(height: widget.workspaceStyle ? 8 : 10),
+                    for (final entry in widget.entries)
+                      _ThreadMessageEntryView(
+                        key: ValueKey('group-child:${entry.key}'),
+                        entry: entry,
+                        workspaceStyle: widget.workspaceStyle,
+                      ),
+                  ],
+                ],
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
 class _ThreadMessageStatusBar extends StatelessWidget {
   const _ThreadMessageStatusBar({
     required this.stateLabel,
@@ -881,14 +1092,15 @@ class _ThreadMessageMetaChip extends StatelessWidget {
       ),
       child: Padding(
         padding: EdgeInsets.symmetric(
-          horizontal: workspaceStyle ? 8 : 9,
-          vertical: workspaceStyle ? 4 : 5,
+          horizontal: workspaceStyle ? 7 : 8,
+          vertical: workspaceStyle ? 3 : 4,
         ),
         child: Text(
           label,
           style: theme.textTheme.labelSmall?.copyWith(
             color: emphasized ? effectiveAccent : secondaryTextColor(theme),
             fontWeight: FontWeight.w600,
+            height: 1.0,
           ),
         ),
       ),
@@ -1083,4 +1295,57 @@ bool _canShowCommandDetails(String? cwd, String? exitCode, String? output) {
   return (cwd?.isNotEmpty ?? false) ||
       (exitCode?.isNotEmpty ?? false) ||
       (output?.isNotEmpty ?? false);
+}
+
+int _groupedFileCount(List<ThreadMessageListEntry> entries) {
+  var count = 0;
+  for (final entry in entries) {
+    if (entry.kind != ThreadMessageEntryKind.fileChange || entry.item == null) {
+      continue;
+    }
+    final fileEntries = parseCodexFileChangeEntries(entry.item!);
+    count += fileEntries.isEmpty ? 1 : fileEntries.length;
+  }
+  return count;
+}
+
+DateTime? _latestGroupedEntryTimestamp(List<ThreadMessageListEntry> entries) {
+  DateTime? latest;
+  for (final entry in entries) {
+    final item = entry.displayItem;
+    if (item == null) {
+      continue;
+    }
+    final timestamp = resolveThreadItemDisplayTimestamp(item);
+    if (timestamp == null) {
+      continue;
+    }
+    if (latest == null || timestamp.isAfter(latest)) {
+      latest = timestamp;
+    }
+  }
+  return latest;
+}
+
+String _operationGroupSummaryText(
+  BuildContext context, {
+  required int commandCount,
+  required int fileCount,
+}) {
+  if (fileCount > 0 && commandCount > 0) {
+    return context.strings.text(
+      'Edited $fileCount file${fileCount == 1 ? '' : 's'} and ran $commandCount command${commandCount == 1 ? '' : 's'}',
+      '编辑了 $fileCount 个文件，执行了 $commandCount 条命令',
+    );
+  }
+  if (fileCount > 0) {
+    return context.strings.text(
+      'Edited $fileCount file${fileCount == 1 ? '' : 's'}',
+      '编辑了 $fileCount 个文件',
+    );
+  }
+  return context.strings.text(
+    'Ran $commandCount command${commandCount == 1 ? '' : 's'}',
+    '执行了 $commandCount 条命令',
+  );
 }

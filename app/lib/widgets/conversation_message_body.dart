@@ -93,12 +93,10 @@ class ConversationMessageBody extends StatelessWidget {
     }
 
     final theme = Theme.of(context);
-    final renderPlainText = _shouldRenderPlainTextWhileIncomplete(item);
     return _MarkdownTextBody(
       data: body,
       workspaceStyle: workspaceStyle,
       fallbackStyle: theme.textTheme.bodyMedium,
-      markdownEnabled: !renderPlainText,
     );
   }
 }
@@ -115,36 +113,102 @@ class _AssistantGroupBody extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    final spacing = workspaceStyle ? 10.0 : 12.0;
+    final spacing = workspaceStyle ? 8.0 : 10.0;
+    final blocks = _buildAssistantGroupBlocks(
+      items,
+      collapseOperations: !_assistantGroupHasFinalAnswer(items),
+    );
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        for (var index = 0; index < items.length; index += 1) ...[
+        for (var index = 0; index < blocks.length; index += 1) ...[
           if (index > 0) SizedBox(height: spacing),
-          if (_shouldShowAssistantGroupLabel(items[index])) ...[
+          if (blocks[index].item case final item?
+              when _shouldShowAssistantGroupLabel(item)) ...[
             Text(
-              _localizedAssistantGroupLabel(context, items[index]),
+              _localizedAssistantGroupLabel(context, item),
               style: theme.textTheme.labelSmall?.copyWith(
                 color: secondaryTextColor(theme),
                 fontWeight: FontWeight.w700,
                 letterSpacing: 0.2,
               ),
             ),
-            SizedBox(height: workspaceStyle ? 5 : 6),
+            SizedBox(height: workspaceStyle ? 4 : 5),
           ],
-          _AssistantGroupItemBody(
-            item: items[index],
-            workspaceStyle: workspaceStyle,
-            showReasoningStatus: items[index].type == 'reasoning',
-            reasoningActiveOverride: items[index].type == 'reasoning'
-                ? _isReasoningInProgress(items[index]) &&
-                      !_hasLaterAssistantReply(items, index)
-                : null,
-          ),
+          if (blocks[index].operationItems != null)
+            _AssistantGroupOperationSummary(
+              items: blocks[index].operationItems!,
+              workspaceStyle: workspaceStyle,
+            )
+          else
+            _AssistantGroupItemBody(
+              item: blocks[index].item!,
+              workspaceStyle: workspaceStyle,
+              showReasoningStatus: blocks[index].item!.type == 'reasoning',
+              reasoningActiveOverride: blocks[index].item!.type == 'reasoning'
+                  ? _isReasoningInProgress(blocks[index].item!) &&
+                        !_hasLaterAssistantReply(items, items.indexOf(blocks[index].item!))
+                  : null,
+            ),
         ],
       ],
     );
   }
+}
+
+class _AssistantGroupRenderBlock {
+  const _AssistantGroupRenderBlock.item(this.item) : operationItems = null;
+
+  const _AssistantGroupRenderBlock.operation(this.operationItems) : item = null;
+
+  final CodexThreadItem? item;
+  final List<CodexThreadItem>? operationItems;
+}
+
+List<_AssistantGroupRenderBlock> _buildAssistantGroupBlocks(
+  List<CodexThreadItem> items,
+  {
+  required bool collapseOperations,
+}
+) {
+  if (items.isEmpty) {
+    return const [];
+  }
+
+  final blocks = <_AssistantGroupRenderBlock>[];
+  var index = 0;
+  while (index < items.length) {
+    final item = items[index];
+    if (!_isAssistantOperationItem(item)) {
+      blocks.add(_AssistantGroupRenderBlock.item(item));
+      index += 1;
+      continue;
+    }
+
+    final runStart = index;
+    while (index < items.length && _isAssistantOperationItem(items[index])) {
+      index += 1;
+    }
+
+    final operationRun = items.sublist(runStart, index);
+    if (collapseOperations && operationRun.length > 1) {
+      blocks.add(_AssistantGroupRenderBlock.operation(operationRun));
+      continue;
+    }
+
+    for (final operationItem in operationRun) {
+      blocks.add(_AssistantGroupRenderBlock.item(operationItem));
+    }
+  }
+  return blocks;
+}
+
+bool _isAssistantOperationItem(CodexThreadItem item) {
+  return item.type == 'command.execution' || item.type == 'file.change';
+}
+
+bool _assistantGroupHasFinalAnswer(List<CodexThreadItem> items) {
+  return items.any((item) => _itemPhase(item) == 'final_answer');
 }
 
 class _AssistantGroupItemBody extends StatelessWidget {
@@ -194,6 +258,119 @@ class _AssistantGroupItemBody extends StatelessWidget {
     }
 
     return ConversationMessageBody(item: item, workspaceStyle: workspaceStyle);
+  }
+}
+
+class _AssistantGroupOperationSummary extends StatefulWidget {
+  const _AssistantGroupOperationSummary({
+    required this.items,
+    required this.workspaceStyle,
+  });
+
+  final List<CodexThreadItem> items;
+  final bool workspaceStyle;
+
+  @override
+  State<_AssistantGroupOperationSummary> createState() =>
+      _AssistantGroupOperationSummaryState();
+}
+
+class _AssistantGroupOperationSummaryState
+    extends State<_AssistantGroupOperationSummary> {
+  bool _expanded = false;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final commandCount = widget.items
+        .where((item) => item.type == 'command.execution')
+        .length;
+    final fileCount = _assistantGroupFileCount(widget.items);
+
+    return DecoratedBox(
+      decoration: BoxDecoration(
+        color: mutedPanelBackgroundColor(theme),
+        borderRadius: BorderRadius.circular(widget.workspaceStyle ? 10 : 12),
+        border: Border.all(color: borderColor(theme)),
+      ),
+      child: Material(
+        color: Colors.transparent,
+        child: InkWell(
+          borderRadius: BorderRadius.circular(widget.workspaceStyle ? 10 : 12),
+          onTap: () {
+            setState(() {
+              _expanded = !_expanded;
+            });
+          },
+          child: Padding(
+            padding: EdgeInsets.fromLTRB(
+              widget.workspaceStyle ? 8 : 10,
+              widget.workspaceStyle ? 6 : 7,
+              widget.workspaceStyle ? 8 : 10,
+              widget.workspaceStyle ? 6 : 7,
+            ),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  crossAxisAlignment: CrossAxisAlignment.center,
+                  children: [
+                    Container(
+                      width: widget.workspaceStyle ? 20 : 22,
+                      height: widget.workspaceStyle ? 20 : 22,
+                      decoration: BoxDecoration(
+                        color: theme.colorScheme.primary.withValues(alpha: 0.08),
+                        borderRadius: BorderRadius.circular(7),
+                      ),
+                      alignment: Alignment.center,
+                      child: Icon(
+                        Icons.layers_rounded,
+                        size: widget.workspaceStyle ? 12 : 13,
+                        color: secondaryTextColor(theme),
+                      ),
+                    ),
+                    const SizedBox(width: 6),
+                    Expanded(
+                      child: Text(
+                        _assistantGroupOperationSummaryText(
+                          context,
+                          commandCount: commandCount,
+                          fileCount: fileCount,
+                        ),
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: theme.textTheme.bodyMedium?.copyWith(
+                          fontWeight: FontWeight.w600,
+                          height: 1.2,
+                        ),
+                      ),
+                    ),
+                    const SizedBox(width: 4),
+                    Icon(
+                      _expanded
+                          ? Icons.keyboard_arrow_up_rounded
+                          : Icons.keyboard_arrow_down_rounded,
+                      size: widget.workspaceStyle ? 15 : 16,
+                      color: secondaryTextColor(theme),
+                    ),
+                  ],
+                ),
+                if (_expanded) ...[
+                  SizedBox(height: widget.workspaceStyle ? 6 : 8),
+                  for (var index = 0; index < widget.items.length; index += 1) ...[
+                    if (index > 0) SizedBox(height: widget.workspaceStyle ? 4 : 6),
+                    _AssistantGroupItemBody(
+                      item: widget.items[index],
+                      workspaceStyle: widget.workspaceStyle,
+                    ),
+                  ],
+                ],
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
   }
 }
 
@@ -569,31 +746,17 @@ class _MarkdownTextBody extends StatelessWidget {
     required this.data,
     required this.workspaceStyle,
     this.fallbackStyle,
-    this.markdownEnabled = true,
   });
 
   final String data;
   final bool workspaceStyle;
   final TextStyle? fallbackStyle;
-  final bool markdownEnabled;
 
   @override
   Widget build(BuildContext context) {
     final trimmed = data.trimRight();
     if (trimmed.isEmpty) {
       return const SizedBox.shrink();
-    }
-    if (!markdownEnabled) {
-      final theme = Theme.of(context);
-      return SelectableText(
-        trimmed,
-        style:
-            fallbackStyle ??
-            theme.textTheme.bodyMedium?.copyWith(
-              color: theme.colorScheme.onSurface,
-              height: 1.45,
-            ),
-      );
     }
     final fencedSegments = _parseFencedCodeSegments(trimmed);
     if (fencedSegments != null) {
@@ -1443,13 +1606,14 @@ class _InlineMetaBadge extends StatelessWidget {
       ),
       child: Padding(
         padding: EdgeInsets.symmetric(
-          horizontal: workspaceStyle ? 8 : 10,
-          vertical: workspaceStyle ? 4 : 6,
+          horizontal: workspaceStyle ? 7 : 8,
+          vertical: workspaceStyle ? 3 : 4,
         ),
         child: Text(
           value,
           style: theme.textTheme.labelMedium?.copyWith(
             color: secondaryTextColor(theme),
+            height: 1.0,
           ),
         ),
       ),
@@ -1464,31 +1628,6 @@ bool _preferPreformatted(CodexThreadItem item) {
     case 'mcp.tool.call':
     case 'tool.call':
     case 'agent.tool.call':
-      return true;
-    default:
-      return false;
-  }
-}
-
-bool _shouldRenderPlainTextWhileIncomplete(CodexThreadItem item) {
-  if (item.type != 'agent.message' && item.type != 'plan') {
-    return false;
-  }
-  if (_itemPhase(item) == 'final_answer') {
-    return false;
-  }
-  return _isIncompleteMessageStatus(item.status) ||
-      _itemPhase(item) == 'streaming';
-}
-
-bool _isIncompleteMessageStatus(String status) {
-  switch (status.trim().toLowerCase()) {
-    case 'started':
-    case 'starting':
-    case 'in_progress':
-    case 'streaming':
-    case 'running':
-    case 'pending':
       return true;
     default:
       return false;
@@ -1858,6 +1997,44 @@ String _localizedAssistantGroupLabel(
     default:
       return item.title;
   }
+}
+
+int _assistantGroupFileCount(List<CodexThreadItem> items) {
+  var count = 0;
+  for (final item in items) {
+    if (item.type != 'file.change') {
+      continue;
+    }
+    final entries = parseCodexFileChangeEntries(item);
+    count += entries.isEmpty ? 1 : entries.length;
+  }
+  return count;
+}
+
+String _assistantGroupOperationSummaryText(
+  BuildContext context, {
+  required int commandCount,
+  required int fileCount,
+}) {
+  if (fileCount > 0 && commandCount > 0) {
+    return _localizedText(
+      context,
+      'Edited $fileCount file${fileCount == 1 ? '' : 's'} and ran $commandCount command${commandCount == 1 ? '' : 's'}',
+      '编辑了 $fileCount 个文件，执行了 $commandCount 条命令',
+    );
+  }
+  if (fileCount > 0) {
+    return _localizedText(
+      context,
+      'Edited $fileCount file${fileCount == 1 ? '' : 's'}',
+      '编辑了 $fileCount 个文件',
+    );
+  }
+  return _localizedText(
+    context,
+    'Ran $commandCount command${commandCount == 1 ? '' : 's'}',
+    '执行了 $commandCount 条命令',
+  );
 }
 
 String _localizedText(BuildContext context, String english, String chinese) {

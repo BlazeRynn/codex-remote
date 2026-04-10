@@ -308,14 +308,15 @@ List<ThreadMessageListEntry> _buildTurnEntries(
     if (assistantItems.isEmpty) {
       return;
     }
-    final entry = _buildAssistantEntry(
+    final assistantEntries = _buildAssistantEntries(
       assistantItems,
-      segmentKey: 'assistant-bubble:$turnKey:$assistantSegmentIndex',
+      turnKey: turnKey,
+      startingSegmentIndex: assistantSegmentIndex,
     );
-    if (entry != null) {
-      entries.add(entry);
-      assistantSegmentIndex += 1;
-    }
+    entries.addAll(assistantEntries);
+    assistantSegmentIndex += assistantEntries
+        .where((entry) => entry.kind == ThreadMessageEntryKind.bubble)
+        .length;
     assistantItems.clear();
   }
 
@@ -346,37 +347,45 @@ List<ThreadMessageListEntry> _buildTurnEntries(
   return entries;
 }
 
-ThreadMessageListEntry? _buildAssistantEntry(
+List<ThreadMessageListEntry> _buildAssistantEntries(
   List<CodexThreadItem> items, {
-  required String segmentKey,
+  required String turnKey,
+  required int startingSegmentIndex,
 }) {
   if (items.isEmpty) {
-    return null;
+    return const [];
   }
 
   final agentMessages = items.where(_isAgentMessage).toList(growable: false);
   final finalAnswer = _latestMeaningfulFinalAnswer(agentMessages);
+  final visibleAgentMessages = (finalAnswer == null
+          ? _visibleAgentMessages(agentMessages)
+          : [finalAnswer])
+      .toList(growable: false);
   final visibleItems = finalAnswer == null
-      ? _visibleAssistantItems(items, agentMessages)
-      : [finalAnswer];
+      ? _visibleAssistantItems(items, visibleAgentMessages)
+      : visibleAgentMessages;
   if (visibleItems.isEmpty) {
-    return null;
+    return const [];
   }
 
+  final segmentKey = 'assistant-bubble:$turnKey:$startingSegmentIndex';
   if (visibleItems.length == 1) {
     final single = visibleItems.single;
     if (_isStandaloneEntryType(single)) {
-      return _entryFromStandaloneItem(single, keyOverride: segmentKey);
+      return [_entryFromStandaloneItem(single, keyOverride: segmentKey)];
     }
   }
 
-  return ThreadMessageListEntry.bubble(
-    key: segmentKey,
-    items: visibleItems,
-    sourceItems: items,
-    actor: _bubbleActor(visibleItems),
-    status: visibleItems.last.status,
-  );
+  return [
+    ThreadMessageListEntry.bubble(
+      key: segmentKey,
+      items: List<CodexThreadItem>.unmodifiable(visibleItems),
+      sourceItems: List<CodexThreadItem>.unmodifiable(items),
+      actor: _bubbleActor(visibleItems),
+      status: visibleItems.last.status,
+    ),
+  ];
 }
 
 ThreadMessageListEntry _entryFromStandaloneItem(
@@ -448,19 +457,6 @@ CodexThreadItem _legacyItemFromEntry(ThreadMessageListEntry entry) {
   }
 }
 
-List<CodexThreadItem> _visibleAssistantItems(
-  List<CodexThreadItem> items,
-  List<CodexThreadItem> agentMessages,
-) {
-  final visibleItems = items
-      .where((item) => !_isAgentMessage(item) || _hasMeaningfulBody(item))
-      .toList(growable: false);
-  if (visibleItems.isNotEmpty) {
-    return visibleItems;
-  }
-  return _visibleAgentMessages(agentMessages);
-}
-
 CodexThreadItem? _latestMeaningfulFinalAnswer(List<CodexThreadItem> items) {
   for (final item in items.reversed) {
     if (_itemPhase(item) == 'final_answer' && _hasMeaningfulBody(item)) {
@@ -475,33 +471,32 @@ List<CodexThreadItem> _visibleAgentMessages(List<CodexThreadItem> items) {
     return const [];
   }
 
-  for (final item in items.reversed) {
-    if (_itemPhase(item) == 'final_answer' && _hasMeaningfulBody(item)) {
-      return [item];
-    }
-  }
-  for (final item in items.reversed) {
-    if (_itemPhase(item) == 'streaming' && _hasMeaningfulBody(item)) {
-      return [item];
-    }
-  }
-  for (final item in items.reversed) {
-    if (_hasMeaningfulBody(item)) {
-      return [item];
-    }
-  }
-  for (final item in items.reversed) {
-    if (_itemPhase(item) == 'final_answer') {
-      return [item];
-    }
-  }
-  for (final item in items.reversed) {
-    if (_itemPhase(item) == 'streaming') {
-      return [item];
-    }
+  final meaningfulItems = items
+      .where(_hasMeaningfulBody)
+      .toList(growable: false);
+  if (meaningfulItems.isNotEmpty) {
+    return meaningfulItems;
   }
 
   return [items.last];
+}
+
+List<CodexThreadItem> _visibleAssistantItems(
+  List<CodexThreadItem> items,
+  List<CodexThreadItem> visibleAgentMessages,
+) {
+  final visibleAgentIds = visibleAgentMessages
+      .map((item) => item.id)
+      .toSet();
+  final visibleItems = items
+      .where(
+        (item) => !_isAgentMessage(item) || visibleAgentIds.contains(item.id),
+      )
+      .toList(growable: false);
+  if (visibleItems.isNotEmpty) {
+    return visibleItems;
+  }
+  return visibleAgentMessages;
 }
 
 List<CodexThreadItem> _dedupeTurnItems(List<CodexThreadItem> items) {

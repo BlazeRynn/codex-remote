@@ -64,7 +64,7 @@ void main() {
   );
 
   test(
-    'keeps assistant text and tool output in their original order within one bubble',
+    'keeps assistant text updates and tool output in their original order inside one bubble',
     () {
       final projection = projectThreadMessageList([
         _item(
@@ -98,15 +98,165 @@ void main() {
       ]);
 
       expect(projection.entries, hasLength(2));
-      expect(projection.entries[1].kind, ThreadMessageEntryKind.bubble);
       expect(
-        projection.entries[1].items
-            .map((item) => item.id)
-            .toList(growable: false),
+        projection.entries.map((entry) => entry.kind).toList(growable: false),
+        [
+          ThreadMessageEntryKind.bubble,
+          ThreadMessageEntryKind.bubble,
+        ],
+      );
+      expect(
+        projection.entries[1].items.map((item) => item.id).toList(growable: false),
         ['agent-4', 'cmd-1', 'agent-5'],
       );
     },
   );
+
+  test('keeps trailing tool output visible without requiring a newer text', () {
+    final projection = projectThreadMessageList([
+      _item(
+        id: 'user-5',
+        actor: 'user',
+        type: 'user.message',
+        body: 'wait for the next text',
+        raw: const {'turnId': 'turn-5'},
+      ),
+      _item(
+        id: 'agent-9',
+        actor: 'assistant',
+        type: 'agent.message',
+        body: 'starting work',
+        raw: const {'turnId': 'turn-5', 'phase': 'commentary'},
+      ),
+      _item(
+        id: 'cmd-4',
+        actor: 'assistant',
+        type: 'command.execution',
+        body: 'rg pending',
+        raw: const {'turnId': 'turn-5', 'command': ['rg', 'pending']},
+      ),
+      _item(
+        id: 'file-2',
+        actor: 'assistant',
+        type: 'file.change',
+        body: '',
+        raw: const {
+          'turnId': 'turn-5',
+          'changes': [
+            {'path': 'lib/pending.dart', 'kind': 'updated'},
+            {'path': 'lib/next.dart', 'kind': 'updated'},
+          ],
+        },
+      ),
+    ]);
+
+    expect(projection.entries, hasLength(2));
+    expect(projection.entries[1].kind, ThreadMessageEntryKind.bubble);
+    expect(
+      projection.entries[1].items.map((item) => item.id).toList(growable: false),
+      ['agent-9', 'cmd-4', 'file-2'],
+    );
+  });
+
+  test('does not replace earlier visible text when later text arrives', () {
+    final projection = projectThreadMessageList([
+      _item(
+        id: 'user-6',
+        actor: 'user',
+        type: 'user.message',
+        body: 'preserve text',
+        raw: const {'turnId': 'turn-6'},
+      ),
+      _item(
+        id: 'agent-10',
+        actor: 'assistant',
+        type: 'agent.message',
+        body: 'first text',
+        raw: const {'turnId': 'turn-6', 'phase': 'commentary'},
+      ),
+      _item(
+        id: 'cmd-5',
+        actor: 'assistant',
+        type: 'command.execution',
+        body: 'rg preserve',
+        raw: const {'turnId': 'turn-6', 'command': ['rg', 'preserve']},
+      ),
+      _item(
+        id: 'agent-11',
+        actor: 'assistant',
+        type: 'agent.message',
+        body: 'second text',
+        raw: const {'turnId': 'turn-6', 'phase': 'streaming'},
+      ),
+    ]);
+
+    expect(projection.entries, hasLength(2));
+    expect(projection.entries[1].kind, ThreadMessageEntryKind.bubble);
+    expect(
+      projection.entries[1].items.map((item) => item.id).toList(growable: false),
+      ['agent-10', 'cmd-5', 'agent-11'],
+    );
+  });
+
+  test('final answer bubble hides prior tool entries and keeps source items', () {
+    final projection = projectThreadMessageList([
+      _item(
+        id: 'user-4',
+        actor: 'user',
+        type: 'user.message',
+        body: 'wrap the tools',
+        raw: const {'turnId': 'turn-4'},
+      ),
+      _item(
+        id: 'agent-7',
+        actor: 'assistant',
+        type: 'agent.message',
+        body: 'checking files',
+        raw: const {'turnId': 'turn-4', 'phase': 'commentary'},
+      ),
+      _item(
+        id: 'cmd-3',
+        actor: 'assistant',
+        type: 'command.execution',
+        body: 'rg operation',
+        raw: const {'turnId': 'turn-4', 'command': ['rg', 'operation']},
+      ),
+      _item(
+        id: 'file-1',
+        actor: 'assistant',
+        type: 'file.change',
+        body: '',
+        raw: const {
+          'turnId': 'turn-4',
+          'changes': [
+            {'path': 'lib/a.dart', 'kind': 'updated'},
+            {'path': 'lib/b.dart', 'kind': 'updated'},
+          ],
+        },
+      ),
+      _item(
+        id: 'agent-8',
+        actor: 'assistant',
+        type: 'agent.message',
+        body: 'done',
+        raw: const {'turnId': 'turn-4', 'phase': 'final_answer'},
+      ),
+    ]);
+
+    expect(projection.entries, hasLength(2));
+    expect(
+      projection.entries.map((entry) => entry.kind).toList(growable: false),
+      [
+        ThreadMessageEntryKind.bubble,
+        ThreadMessageEntryKind.bubble,
+      ],
+    );
+    expect(projection.entries[1].items.single.id, 'agent-8');
+    expect(
+      projection.entries[1].sourceItems.map((item) => item.id).toList(),
+      ['agent-7', 'cmd-3', 'file-1', 'agent-8'],
+    );
+  });
 
   test('keeps context compaction as a standalone divider inside a turn', () {
     final projection = projectThreadMessageList([
@@ -219,12 +369,15 @@ void main() {
         syncProjection.entries.map((entry) => entry.key).toList(),
       );
 
-      final groupedItem = asyncProjection.legacyItems.firstWhere(
-        (item) => item.raw['bubbleItems'] is List,
+      final assistantBubble = asyncProjection.entries.firstWhere(
+        (entry) =>
+            entry.kind == ThreadMessageEntryKind.bubble &&
+            entry.items.any((item) => item.type == 'command.execution'),
       );
-      final bubbleItems = groupedItem.raw['bubbleItems'] as List;
-      expect(bubbleItems, isNotEmpty);
-      expect(bubbleItems.every((item) => item is CodexThreadItem), isTrue);
+      expect(
+        assistantBubble.items.any((item) => item.type == 'command.execution'),
+        isTrue,
+      );
     },
   );
 }
