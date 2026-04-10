@@ -1,4 +1,4 @@
-import 'dart:async';
+﻿import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter/material.dart';
@@ -18,6 +18,7 @@ import '../models/codex_thread_item.dart';
 import '../models/codex_thread_runtime.dart';
 import '../models/codex_thread_summary.dart';
 import '../services/bridge_realtime_client.dart';
+import '../services/composer_submission_queue_policy.dart';
 import '../services/composer_attachment_bridge.dart';
 import '../services/codex_repository.dart';
 import '../services/realtime_event_helpers.dart';
@@ -36,12 +37,14 @@ class ThreadDetailScreen extends StatefulWidget {
     required this.thread,
     this.selectedThreadId,
     this.activeThreadId,
+    this.repository,
   });
 
   final BridgeConfig config;
   final CodexThreadSummary thread;
   final String? selectedThreadId;
   final String? activeThreadId;
+  final CodexRepository? repository;
 
   @override
   State<ThreadDetailScreen> createState() => _ThreadDetailScreenState();
@@ -50,13 +53,74 @@ class ThreadDetailScreen extends StatefulWidget {
 class _ThreadDetailScreenState extends State<ThreadDetailScreen> {
   final GlobalKey<_ThreadDetailPaneState> _paneKey =
       GlobalKey<_ThreadDetailPaneState>();
+  LiveConnectionState _headerLiveConnectionState =
+      LiveConnectionState.disconnected;
 
   @override
   Widget build(BuildContext context) {
     final strings = context.strings;
+    final theme = Theme.of(context);
+    final workspaceLabel = _workspaceLabel(context, widget.thread.cwd);
+    final subtitleStyle = theme.textTheme.labelSmall?.copyWith(
+      color: secondaryTextColor(theme),
+      height: 1.1,
+    );
+    final connectionInfo = switch (_headerLiveConnectionState) {
+      LiveConnectionState.connecting => (
+        Icons.sync_rounded,
+        theme.colorScheme.tertiary,
+        strings.text('Connecting', '连接中'),
+      ),
+      LiveConnectionState.connected => (
+        Icons.cloud_done_rounded,
+        theme.colorScheme.primary,
+        strings.text('Connected', '已连接'),
+      ),
+      LiveConnectionState.failed => (
+        Icons.cloud_off_rounded,
+        theme.colorScheme.error,
+        strings.text('Connection failed', '连接失败'),
+      ),
+      LiveConnectionState.disconnected => (
+        Icons.link_off_rounded,
+        secondaryTextColor(theme),
+        strings.text('Disconnected', '未连接'),
+      ),
+    };
     return Scaffold(
       appBar: AppBar(
-        title: Text(widget.thread.title),
+        toolbarHeight: 68,
+        title: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(widget.thread.title, maxLines: 1, overflow: TextOverflow.ellipsis),
+            const SizedBox(height: 3),
+            Row(
+              children: [
+                Icon(
+                  Icons.folder_open_rounded,
+                  size: 12,
+                  color: secondaryTextColor(theme),
+                ),
+                const SizedBox(width: 4),
+                Expanded(
+                  child: Text(
+                    workspaceLabel,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: subtitleStyle,
+                  ),
+                ),
+                const SizedBox(width: 8),
+                Tooltip(
+                  message: connectionInfo.$3,
+                  child: Icon(connectionInfo.$1, size: 14, color: connectionInfo.$2),
+                ),
+              ],
+            ),
+          ],
+        ),
         actions: [
           IconButton(
             onPressed: () {
@@ -73,6 +137,18 @@ class _ThreadDetailScreenState extends State<ThreadDetailScreen> {
         thread: widget.thread,
         selectedThreadId: widget.selectedThreadId ?? widget.thread.id,
         activeThreadId: widget.activeThreadId,
+        repository: widget.repository,
+        onLiveConnectionStateChanged: (state) {
+          if (_headerLiveConnectionState == state) {
+            return;
+          }
+          if (!mounted) {
+            return;
+          }
+          setState(() {
+            _headerLiveConnectionState = state;
+          });
+        },
       ),
     );
   }
@@ -86,6 +162,8 @@ class ThreadDetailPane extends StatefulWidget {
     this.selectedThreadId,
     this.activeThreadId,
     this.workspaceStyle = false,
+    this.repository,
+    this.onLiveConnectionStateChanged,
   });
 
   final BridgeConfig config;
@@ -93,6 +171,8 @@ class ThreadDetailPane extends StatefulWidget {
   final String? selectedThreadId;
   final String? activeThreadId;
   final bool workspaceStyle;
+  final CodexRepository? repository;
+  final ValueChanged<LiveConnectionState>? onLiveConnectionStateChanged;
 
   @override
   State<ThreadDetailPane> createState() => _ThreadDetailPaneState();
@@ -118,12 +198,15 @@ class _ThreadDetailPaneState extends State<ThreadDetailPane>
   bool _modelsLoading = true;
   bool _submitting = false;
   bool _responding = false;
+  bool _queuedSubmissionDrainInFlight = false;
+  bool _queuedComposerAwaitingTurnCompletion = false;
   String? _error;
   String? _controlError;
   LiveConnectionState _liveConnectionState = LiveConnectionState.disconnected;
   String? _liveError;
   List<CodexModelOption> _models = const [];
   List<CodexInputPart> _composerAttachments = const [];
+  List<_QueuedComposerSubmission> _queuedComposerSubmissions = const [];
   CodexComposerMode _selectedMode = CodexComposerMode.agent;
   String? _selectedModelId;
 
@@ -147,17 +230,22 @@ class _ThreadDetailPaneState extends State<ThreadDetailPane>
   bool _projectionTaskInFlight = false;
   bool _projectionRefreshQueued = false;
   bool _queuedProjectionForceScroll = false;
+  String _queuedProjectionReason = 'unknown';
   int _scrollToBottomRequestId = 0;
+  int _queuedComposerSubmissionOrdinal = 0;
 
   @override
   bool get wantKeepAlive => true;
+
+  bool get _hasActiveTurnInFlight =>
+      _runtime.activeTurnId != null || _bundle.thread.status == 'active';
 
   Future<void> refresh() => _reloadAll();
 
   @override
   void initState() {
     super.initState();
-    _repository = createCodexRepository(widget.config);
+    _repository = widget.repository ?? createCodexRepository(widget.config);
     _composerController = TextEditingController();
     _timelineScrollController = ScrollController()
       ..addListener(_handleTimelineScroll);
@@ -245,6 +333,13 @@ class _ThreadDetailPaneState extends State<ThreadDetailPane>
   }
 
   void _activateFollowConversationAndScroll() {
+    _debugLog(
+      'scroll.activate_follow',
+      fields: {
+        'followConversation': _followConversation,
+        'hasClients': _timelineScrollController.hasClients,
+      },
+    );
     if (_followConversation) {
       _scrollConversationToBottom(animated: false, force: true);
       return;
@@ -292,6 +387,7 @@ class _ThreadDetailPaneState extends State<ThreadDetailPane>
       _requestConversationProjection(
         forceScrollToBottom:
             cachedBundle.items.isNotEmpty && _followConversation,
+        reason: 'prime_cache',
       );
     }
 
@@ -381,10 +477,24 @@ class _ThreadDetailPaneState extends State<ThreadDetailPane>
     }
   }
 
-  void _requestConversationProjection({bool forceScrollToBottom = false}) {
+  void _requestConversationProjection({
+    bool forceScrollToBottom = false,
+    String reason = 'unknown',
+  }) {
+    _debugLog(
+      'projection.request',
+      fields: {
+        'reason': reason,
+        'forceScrollToBottom': forceScrollToBottom,
+        'followConversation': _followConversation,
+        'userScrollInProgress': _userScrollInProgress,
+        'itemCount': _realtimeAccumulator.items.length,
+      },
+    );
     _projectionRefreshQueued = true;
     _queuedProjectionForceScroll =
         _queuedProjectionForceScroll || forceScrollToBottom;
+    _queuedProjectionReason = reason;
     if (_projectionTaskInFlight) {
       return;
     }
@@ -401,8 +511,10 @@ class _ThreadDetailPaneState extends State<ThreadDetailPane>
     try {
       while (mounted && _projectionRefreshQueued) {
         final forceScrollToBottom = _queuedProjectionForceScroll;
+        final reason = _queuedProjectionReason;
         _projectionRefreshQueued = false;
         _queuedProjectionForceScroll = false;
+        _queuedProjectionReason = 'unknown';
 
         final items = _realtimeAccumulator.items;
         final previousProjection = _conversationProjection;
@@ -463,6 +575,7 @@ class _ThreadDetailPaneState extends State<ThreadDetailPane>
           previousProjection: previousProjection,
           nextProjection: nextProjection,
           force: forceScrollToBottom,
+          reason: reason,
         );
       }
     } finally {
@@ -525,6 +638,7 @@ class _ThreadDetailPaneState extends State<ThreadDetailPane>
         forceScrollToBottom:
             forceScrollToBottom ||
             (previousBundle.items.isEmpty && nextConversationItems.isNotEmpty),
+        reason: 'bundle_loaded',
       );
     } catch (error) {
       if (!mounted) {
@@ -550,14 +664,7 @@ class _ThreadDetailPaneState extends State<ThreadDetailPane>
     if (_programmaticScrollInProgress) {
       return;
     }
-    if (_userScrollInProgress) {
-      if (!_followConversation && _isAtConversationBottom()) {
-        _setFollowConversation(true);
-      }
-      return;
-    }
-    final nextFollowConversation = _isNearConversationBottom();
-    _setFollowConversation(nextFollowConversation);
+    _setFollowConversation(_isAtConversationBottom());
   }
 
   bool _handleTimelineScrollNotification(ScrollNotification notification) {
@@ -566,12 +673,17 @@ class _ThreadDetailPaneState extends State<ThreadDetailPane>
     }
 
     if (notification is UserScrollNotification) {
-      if (notification.direction == ScrollDirection.forward) {
-        _setFollowConversation(false);
-      } else if (notification.direction == ScrollDirection.idle &&
-          _isAtConversationBottom()) {
-        _setFollowConversation(true);
-      }
+      _debugLog(
+        'scroll.user_direction',
+        fields: {
+          'direction': notification.direction.name,
+          'pixels': notification.metrics.pixels.toStringAsFixed(1),
+          'maxScrollExtent': notification.metrics.maxScrollExtent
+              .toStringAsFixed(1),
+          'followConversation': _followConversation,
+          'userScrollInProgress': _userScrollInProgress,
+        },
+      );
       _updateUserScrollState(
         active: notification.direction != ScrollDirection.idle,
       );
@@ -580,11 +692,36 @@ class _ThreadDetailPaneState extends State<ThreadDetailPane>
 
     if (notification is ScrollStartNotification &&
         notification.dragDetails != null) {
+      _debugLog(
+        'scroll.start',
+        fields: {
+          'pixels': notification.metrics.pixels.toStringAsFixed(1),
+          'maxScrollExtent': notification.metrics.maxScrollExtent
+              .toStringAsFixed(1),
+          'followConversation': _followConversation,
+        },
+      );
+      _updateUserScrollState(active: true);
+      return false;
+    }
+
+    if (notification is ScrollUpdateNotification &&
+        !_programmaticScrollInProgress) {
       _updateUserScrollState(active: true);
       return false;
     }
 
     if (notification is ScrollEndNotification) {
+      _debugLog(
+        'scroll.end',
+        fields: {
+          'pixels': notification.metrics.pixels.toStringAsFixed(1),
+          'maxScrollExtent': notification.metrics.maxScrollExtent
+              .toStringAsFixed(1),
+          'followConversation': _followConversation,
+          'userScrollInProgress': _userScrollInProgress,
+        },
+      );
       _updateUserScrollState(active: false);
     }
     return false;
@@ -607,6 +744,21 @@ class _ThreadDetailPaneState extends State<ThreadDetailPane>
     if (_userScrollInProgress == active) {
       return;
     }
+    _debugLog(
+      'scroll.user_state',
+      fields: {
+        'active': active,
+        'followConversation.before': _followConversation,
+        'hasClients': _timelineScrollController.hasClients,
+        'pixels': _timelineScrollController.hasClients
+            ? _timelineScrollController.position.pixels.toStringAsFixed(1)
+            : 'n/a',
+        'maxScrollExtent': _timelineScrollController.hasClients
+            ? _timelineScrollController.position.maxScrollExtent
+                  .toStringAsFixed(1)
+            : 'n/a',
+      },
+    );
     _userScrollInProgress = active;
     if (active) {
       _scrollToBottomRequestId += 1;
@@ -616,17 +768,7 @@ class _ThreadDetailPaneState extends State<ThreadDetailPane>
       _programmaticScrollInProgress = false;
       return;
     }
-    if (_followConversation) {
-      _scrollConversationToBottom(animated: false, force: true);
-    }
-  }
-
-  bool _isNearConversationBottom() {
-    if (!_timelineScrollController.hasClients) {
-      return true;
-    }
-    final position = _timelineScrollController.position;
-    return (position.maxScrollExtent - position.pixels) <= 24;
+    _setFollowConversation(_isAtConversationBottom());
   }
 
   bool _isAtConversationBottom() {
@@ -634,7 +776,7 @@ class _ThreadDetailPaneState extends State<ThreadDetailPane>
       return true;
     }
     final position = _timelineScrollController.position;
-    return (position.maxScrollExtent - position.pixels) <= 1;
+    return position.extentAfter <= 0;
   }
 
   void _setFollowConversation(bool next) {
@@ -651,10 +793,25 @@ class _ThreadDetailPaneState extends State<ThreadDetailPane>
     required ThreadMessageListProjection previousProjection,
     required ThreadMessageListProjection nextProjection,
     bool force = false,
+    String reason = 'unknown',
   }) {
     final changed = _shouldAutoScrollForProjectionChange(
       previousProjection,
       nextProjection,
+    );
+    _debugLog(
+      'scroll.auto_candidate',
+      fields: {
+        'reason': reason,
+        'changed': changed,
+        'force': force,
+        'followConversation': _followConversation,
+        'userScrollInProgress': _userScrollInProgress,
+        'previousTail': previousProjection.tailSignature,
+        'nextTail': nextProjection.tailSignature,
+        'previousEntries': previousProjection.entries.length,
+        'nextEntries': nextProjection.entries.length,
+      },
     );
     if (!force && (!changed || !_followConversation || _userScrollInProgress)) {
       return;
@@ -663,6 +820,25 @@ class _ThreadDetailPaneState extends State<ThreadDetailPane>
   }
 
   void _scrollConversationToBottom({bool animated = true, bool force = false}) {
+    _debugLog(
+      'scroll.auto_request',
+      fields: {
+        'animated': animated,
+        'force': force,
+        'followConversation': _followConversation,
+        'userScrollInProgress': _userScrollInProgress,
+        'programmaticScrollInProgress': _programmaticScrollInProgress,
+        'scrollToBottomScheduled': _scrollToBottomScheduled,
+        'hasClients': _timelineScrollController.hasClients,
+        'pixels': _timelineScrollController.hasClients
+            ? _timelineScrollController.position.pixels.toStringAsFixed(1)
+            : 'n/a',
+        'maxScrollExtent': _timelineScrollController.hasClients
+            ? _timelineScrollController.position.maxScrollExtent
+                  .toStringAsFixed(1)
+            : 'n/a',
+      },
+    );
     if (!force && (_userScrollInProgress || !_followConversation)) {
       return;
     }
@@ -805,6 +981,7 @@ class _ThreadDetailPaneState extends State<ThreadDetailPane>
   }
 
   void _applyRealtimeThreadState(BridgeRealtimeEvent event) {
+    final previousHadActiveTurnInFlight = _hasActiveTurnInFlight;
     final projectedThread = projectRealtimeStatusOnThread(
       _bundle.thread,
       event,
@@ -817,6 +994,9 @@ class _ThreadDetailPaneState extends State<ThreadDetailPane>
     }
 
     _runtime = projectRealtimeStatusOnRuntime(_runtime, event);
+    _maybeDispatchQueuedComposerSubmissions(
+      previousHadActiveTurnInFlight: previousHadActiveTurnInFlight,
+    );
   }
 
   Future<void> _loadRuntime({bool quiet = false}) async {
@@ -836,6 +1016,7 @@ class _ThreadDetailPaneState extends State<ThreadDetailPane>
       if (!mounted) {
         return;
       }
+      final previousHadActiveTurnInFlight = _hasActiveTurnInFlight;
 
       final mergedRuntime =
           _runtime.activeTurnId != null && runtime.activeTurnId == null
@@ -847,6 +1028,9 @@ class _ThreadDetailPaneState extends State<ThreadDetailPane>
         _runtimeLoading = false;
       });
       _storeRuntimeCache(mergedRuntime);
+      _maybeDispatchQueuedComposerSubmissions(
+        previousHadActiveTurnInFlight: previousHadActiveTurnInFlight,
+      );
       _debugLog(
         'runtime.loaded',
         fields: {
@@ -910,6 +1094,7 @@ class _ThreadDetailPaneState extends State<ThreadDetailPane>
       _liveConnectionState = LiveConnectionState.connecting;
       _liveError = null;
     });
+    widget.onLiveConnectionStateChanged?.call(_liveConnectionState);
     _debugLog('realtime.open');
 
     try {
@@ -936,6 +1121,7 @@ class _ThreadDetailPaneState extends State<ThreadDetailPane>
             _applyRealtimeThreadState(event);
             insertRealtimeEvent(_liveEvents, event);
           });
+          widget.onLiveConnectionStateChanged?.call(_liveConnectionState);
           _storeCurrentThreadState(items: nextConversationItems);
           _debugLog(
             'realtime.event',
@@ -966,7 +1152,7 @@ class _ThreadDetailPaneState extends State<ThreadDetailPane>
             );
           }
           if (conversationChanged) {
-            _requestConversationProjection();
+            _requestConversationProjection(reason: 'realtime_event');
           }
           _scheduleFollowUpRefresh(event);
         },
@@ -979,6 +1165,7 @@ class _ThreadDetailPaneState extends State<ThreadDetailPane>
             _liveConnectionState = LiveConnectionState.failed;
             _liveError = error.toString();
           });
+          widget.onLiveConnectionStateChanged?.call(_liveConnectionState);
           _debugLog('realtime.error', fields: {'error': error});
         },
         onDone: () {
@@ -991,6 +1178,7 @@ class _ThreadDetailPaneState extends State<ThreadDetailPane>
               _liveConnectionState = LiveConnectionState.disconnected;
             }
           });
+          widget.onLiveConnectionStateChanged?.call(_liveConnectionState);
           _debugLog('realtime.closed');
         },
       );
@@ -998,12 +1186,14 @@ class _ThreadDetailPaneState extends State<ThreadDetailPane>
       setState(() {
         _liveConnectionState = LiveConnectionState.connected;
       });
+      widget.onLiveConnectionStateChanged?.call(_liveConnectionState);
       _debugLog('realtime.connected');
     } catch (error) {
       setState(() {
         _liveConnectionState = LiveConnectionState.failed;
         _liveError = error.toString();
       });
+      widget.onLiveConnectionStateChanged?.call(_liveConnectionState);
       _debugLog('realtime.open_failed', fields: {'error': error});
     }
   }
@@ -1239,6 +1429,17 @@ class _ThreadDetailPaneState extends State<ThreadDetailPane>
     ];
   }
 
+  _QueuedComposerSubmission _buildComposerSubmission(
+    List<CodexInputPart> input,
+  ) {
+    return _QueuedComposerSubmission(
+      id: 'queued-${++_queuedComposerSubmissionOrdinal}',
+      input: List.unmodifiable(input),
+      mode: _selectedMode,
+      modelId: _selectedModelId,
+    );
+  }
+
   Future<void> _pickComposerAttachments() async {
     final attachments = await composerAttachmentBridge.pickAttachments();
     if (!mounted || attachments.isEmpty) {
@@ -1311,9 +1512,84 @@ class _ThreadDetailPaneState extends State<ThreadDetailPane>
     });
   }
 
-  Future<void> _submitComposer() async {
-    final input = _composerInputParts();
-    if (input.isEmpty) {
+  void _enqueueComposerSubmission(_QueuedComposerSubmission submission) {
+    setState(() {
+      _queuedComposerSubmissions = List.unmodifiable([
+        ..._queuedComposerSubmissions,
+        submission,
+      ]);
+      _queuedComposerAwaitingTurnCompletion =
+          _queuedComposerAwaitingTurnCompletion ||
+          shouldAwaitQueuedTurnCompletion(
+            hasQueuedSubmissions: true,
+            hasActiveTurnInFlight: _hasActiveTurnInFlight,
+          );
+      _composerController.clear();
+      _composerAttachments = const [];
+      _followConversation = true;
+      _controlError = null;
+    });
+    _scrollConversationToBottom(animated: false, force: true);
+  }
+
+  void _updateQueuedComposerSubmissions(
+    List<_QueuedComposerSubmission> submissions,
+  ) {
+    setState(() {
+      _queuedComposerSubmissions = List.unmodifiable(submissions);
+      _queuedComposerAwaitingTurnCompletion = shouldAwaitQueuedTurnCompletion(
+        hasQueuedSubmissions: submissions.isNotEmpty,
+        hasActiveTurnInFlight: _hasActiveTurnInFlight,
+      );
+    });
+  }
+
+  Future<void> _removeQueuedComposerSubmission(
+    _QueuedComposerSubmission submission,
+  ) async {
+    final next = _queuedComposerSubmissions
+        .where((item) => item.id != submission.id)
+        .toList(growable: false);
+    _updateQueuedComposerSubmissions(next);
+  }
+
+  Future<void> _editQueuedComposerSubmission(
+    _QueuedComposerSubmission submission,
+  ) async {
+    final textPrompt = submission.textPrompt;
+    final restoredAttachments = submission.input
+        .where((part) => part.isAttachment)
+        .toList(growable: false);
+    final next = _queuedComposerSubmissions
+        .where((item) => item.id != submission.id)
+        .toList(growable: false);
+    final resolvedModelId = _resolveSelectedModelId(
+      _models,
+      preferredId: submission.modelId,
+    );
+    setState(() {
+      _queuedComposerSubmissions = List.unmodifiable(next);
+      _queuedComposerAwaitingTurnCompletion = shouldAwaitQueuedTurnCompletion(
+        hasQueuedSubmissions: next.isNotEmpty,
+        hasActiveTurnInFlight: _hasActiveTurnInFlight,
+      );
+      _selectedMode = submission.mode;
+      _selectedModelId = resolvedModelId;
+      _composerAttachments = List.unmodifiable(restoredAttachments);
+      _composerController.value = TextEditingValue(
+        text: textPrompt,
+        selection: TextSelection.collapsed(offset: textPrompt.length),
+        composing: TextRange.empty,
+      );
+      _controlError = null;
+    });
+  }
+
+  Future<void> _steerQueuedComposerSubmission(
+    _QueuedComposerSubmission submission,
+  ) async {
+    final activeTurnId = _runtime.activeTurnId;
+    if (activeTurnId == null) {
       return;
     }
 
@@ -1325,20 +1601,23 @@ class _ThreadDetailPaneState extends State<ThreadDetailPane>
     try {
       final runtime = await _repository.sendMessage(
         threadId: widget.thread.id,
-        input: input,
-        expectedTurnId: _runtime.activeTurnId,
-        model: _runtime.activeTurnId == null ? _selectedModelId : null,
-        mode: _runtime.activeTurnId == null ? _selectedMode : null,
+        input: submission.input,
+        expectedTurnId: activeTurnId,
       );
       if (!mounted) {
         return;
       }
 
+      final nextQueue = _queuedComposerSubmissions
+          .where((item) => item.id != submission.id)
+          .toList(growable: false);
       setState(() {
-        _composerController.clear();
-        _composerAttachments = const [];
-        _followConversation = true;
         _runtime = runtime;
+        _queuedComposerSubmissions = List.unmodifiable(nextQueue);
+        _queuedComposerAwaitingTurnCompletion = shouldAwaitQueuedTurnCompletion(
+          hasQueuedSubmissions: nextQueue.isNotEmpty,
+          hasActiveTurnInFlight: true,
+        );
         final nextStatus = runtime.activeTurnId == null ? 'idle' : 'active';
         _bundle = CodexThreadBundle(
           thread: _bundle.thread.copyWith(
@@ -1366,9 +1645,279 @@ class _ThreadDetailPaneState extends State<ThreadDetailPane>
     }
   }
 
+  void _maybeDispatchQueuedComposerSubmissions({
+    required bool previousHadActiveTurnInFlight,
+  }) {
+    final canDispatch = canDispatchQueuedComposerSubmissions(
+      hasQueuedSubmissions: _queuedComposerSubmissions.isNotEmpty,
+      queuedSubmissionDrainInFlight: _queuedSubmissionDrainInFlight,
+      submitting: _submitting,
+      awaitingTurnCompletion: _queuedComposerAwaitingTurnCompletion,
+      hasActiveTurnInFlight: _hasActiveTurnInFlight,
+      previousHadActiveTurnInFlight: previousHadActiveTurnInFlight,
+    );
+    if (!canDispatch) {
+      return;
+    }
+    if (_queuedComposerAwaitingTurnCompletion) {
+      _queuedComposerAwaitingTurnCompletion = false;
+    }
+    unawaited(_drainQueuedComposerSubmissions());
+  }
+
+  Future<void> _drainQueuedComposerSubmissions() async {
+    if (_queuedSubmissionDrainInFlight) {
+      return;
+    }
+    _queuedSubmissionDrainInFlight = true;
+    try {
+      while (mounted &&
+          !_hasActiveTurnInFlight &&
+          !_submitting &&
+          _queuedComposerSubmissions.isNotEmpty) {
+        final nextSubmission = _queuedComposerSubmissions.first;
+        setState(() {
+          _queuedComposerSubmissions = List.unmodifiable(
+            _queuedComposerSubmissions.skip(1),
+          );
+        });
+
+        final sent = await _dispatchComposerSubmission(nextSubmission);
+        if (!mounted) {
+          return;
+        }
+        if (!sent) {
+          setState(() {
+            _queuedComposerSubmissions = List.unmodifiable([
+              nextSubmission,
+              ..._queuedComposerSubmissions,
+            ]);
+          });
+          return;
+        }
+      }
+    } finally {
+      _queuedSubmissionDrainInFlight = false;
+    }
+  }
+
+  Future<bool> _dispatchComposerSubmission(
+    _QueuedComposerSubmission submission,
+  ) async {
+    if (_hasActiveTurnInFlight) {
+      return false;
+    }
+
+    setState(() {
+      _submitting = true;
+      _controlError = null;
+    });
+
+    try {
+      final runtime = await _repository.sendMessage(
+        threadId: widget.thread.id,
+        input: submission.input,
+        model: submission.modelId,
+        mode: submission.mode,
+      );
+      if (!mounted) {
+        return true;
+      }
+
+      setState(() {
+        _followConversation = true;
+        _runtime = runtime;
+        _queuedComposerAwaitingTurnCompletion = shouldAwaitQueuedTurnCompletion(
+          hasQueuedSubmissions: _queuedComposerSubmissions.isNotEmpty,
+          hasActiveTurnInFlight: runtime.activeTurnId != null,
+        );
+        final nextStatus = runtime.activeTurnId == null ? 'idle' : 'active';
+        _bundle = CodexThreadBundle(
+          thread: _bundle.thread.copyWith(
+            status: nextStatus,
+            updatedAt: DateTime.now().toUtc(),
+          ),
+          items: _bundle.items,
+        );
+      });
+      _storeCurrentThreadState();
+      _scrollConversationToBottom(animated: false, force: true);
+      return true;
+    } catch (error) {
+      if (!mounted) {
+        return false;
+      }
+      setState(() {
+        _queuedComposerAwaitingTurnCompletion = false;
+        _controlError = error.toString();
+      });
+      return false;
+    } finally {
+      if (mounted) {
+        setState(() {
+          _submitting = false;
+        });
+      }
+    }
+  }
+
+  Future<void> _submitComposer() async {
+    final input = _composerInputParts();
+    if (input.isEmpty) {
+      return;
+    }
+
+    final submission = _buildComposerSubmission(input);
+    if (shouldQueueComposerSubmission(
+      hasActiveTurnInFlight: _hasActiveTurnInFlight,
+      hasQueuedSubmissions: _queuedComposerSubmissions.isNotEmpty,
+    )) {
+      _enqueueComposerSubmission(submission);
+      return;
+    }
+
+    final sent = await _dispatchComposerSubmission(submission);
+    if (!sent || !mounted) {
+      return;
+    }
+
+    setState(() {
+      _composerController.clear();
+      _composerAttachments = const [];
+    });
+  }
+
+  String _queuedComposerSummary(AppStrings strings) {
+    final count = _queuedComposerSubmissions.length;
+    return strings.text(
+      count == 1 ? '1 prompt queued' : '$count prompts queued',
+      count == 1 ? '已排队 1 个问题' : '已排队 $count 个问题',
+    );
+  }
+
+  // ignore: unused_element
+  String _queuedComposerNotice(AppStrings strings) {
+    final count = _queuedComposerSubmissions.length;
+    return strings.text(
+      count == 1 ? '1 prompt queued' : '$count prompts queued',
+      count == 1 ? '已排队 1 个问题' : '已排队 $count 个问题',
+    );
+  }
+
+  // ignore: unused_element
+  String _queuedComposerPreview() {
+    if (_queuedComposerSubmissions.isEmpty) {
+      return '';
+    }
+    return _queuedComposerSubmissions.first.preview
+        .replaceAll(RegExp(r'\s+'), ' ')
+        .trim();
+  }
+
+  String _latestQueuedComposerPreview() {
+    if (_queuedComposerSubmissions.isEmpty) {
+      return '';
+    }
+    return _queuedComposerSubmissions.last.preview
+        .replaceAll(RegExp(r'\s+'), ' ')
+        .trim();
+  }
+
+  // ignore: unused_element
+  String _queuedComposerNoticeMessage(AppStrings strings) {
+    final summary = _queuedComposerNotice(strings);
+    final preview = _queuedComposerPreview();
+    if (preview.isEmpty) {
+      return summary;
+    }
+    return '$summary - $preview';
+  }
+
+  Future<void> _openQueuedComposerSheet() async {
+    if (_queuedComposerSubmissions.isEmpty || !mounted) {
+      return;
+    }
+    final strings = context.strings;
+    await showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      useSafeArea: true,
+      backgroundColor: Colors.transparent,
+      builder: (sheetContext) {
+        final theme = Theme.of(sheetContext);
+        final bottomInset = MediaQuery.of(sheetContext).viewInsets.bottom;
+        Future<void> dismissAndRun(
+          Future<void> Function(_QueuedComposerSubmission submission) action,
+          _QueuedComposerSubmission submission,
+        ) async {
+          Navigator.of(sheetContext).pop();
+          await action(submission);
+        }
+
+        return Padding(
+          padding: EdgeInsets.fromLTRB(12, 12, 12, bottomInset + 12),
+          child: FractionallySizedBox(
+            heightFactor: widget.workspaceStyle ? 0.72 : 0.66,
+            child: DecoratedBox(
+              decoration: BoxDecoration(
+                color: panelBackgroundColor(theme),
+                borderRadius: BorderRadius.circular(
+                  widget.workspaceStyle ? 20 : 24,
+                ),
+                border: Border.all(color: borderColor(theme)),
+              ),
+              child: SafeArea(
+                top: false,
+                child: Column(
+                  children: [
+                    Padding(
+                      padding: const EdgeInsets.only(top: 10, bottom: 4),
+                      child: Container(
+                        width: 40,
+                        height: 4,
+                        decoration: BoxDecoration(
+                          color: borderColor(theme),
+                          borderRadius: BorderRadius.circular(999),
+                        ),
+                      ),
+                    ),
+                    Expanded(
+                      child: SingleChildScrollView(
+                        padding: EdgeInsets.fromLTRB(
+                          widget.workspaceStyle ? 10 : 12,
+                          0,
+                          widget.workspaceStyle ? 10 : 12,
+                          widget.workspaceStyle ? 10 : 12,
+                        ),
+                        child: _QueuedComposerPanel(
+                          submissions: _queuedComposerSubmissions,
+                          summary: _queuedComposerSummary(strings),
+                          busy: _submitting,
+                          hasActiveTurn: _hasActiveTurnInFlight,
+                          onEdit: (submission) =>
+                              dismissAndRun(_editQueuedComposerSubmission, submission),
+                          onDelete: (submission) =>
+                              dismissAndRun(_removeQueuedComposerSubmission, submission),
+                          onSteer: (submission) =>
+                              dismissAndRun(_steerQueuedComposerSubmission, submission),
+                          workspaceStyle: widget.workspaceStyle,
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ),
+        );
+      },
+    );
+  }
+
   Future<void> _interruptTurn() async {
     final activeTurnId = _runtime.activeTurnId;
-    if (activeTurnId == null) {
+    final previousHadActiveTurnInFlight = _hasActiveTurnInFlight;
+    if (!_hasActiveTurnInFlight) {
       return;
     }
 
@@ -1399,6 +1948,9 @@ class _ThreadDetailPaneState extends State<ThreadDetailPane>
       });
       _storeCurrentThreadState();
       unawaited(_loadBundle(showSpinner: false, forceScrollToBottom: true));
+      _maybeDispatchQueuedComposerSubmissions(
+        previousHadActiveTurnInFlight: previousHadActiveTurnInFlight,
+      );
     } catch (error) {
       if (!mounted) {
         return;
@@ -1450,6 +2002,9 @@ class _ThreadDetailPaneState extends State<ThreadDetailPane>
       });
       _storeCurrentThreadState();
       unawaited(_loadBundle(showSpinner: false, forceScrollToBottom: true));
+      _maybeDispatchQueuedComposerSubmissions(
+        previousHadActiveTurnInFlight: _hasActiveTurnInFlight,
+      );
     } catch (error) {
       if (!mounted) {
         return;
@@ -1517,7 +2072,7 @@ class _ThreadDetailPaneState extends State<ThreadDetailPane>
     final liveMessage = _liveError != null && _liveError!.trim().isNotEmpty
         ? _liveError!.trim()
         : _liveEvents.isEmpty
-        ? strings.text('Waiting for live updates', '绛夊緟瀹炴椂鏇存柊')
+        ? strings.text('Waiting for live updates', '等待实时更新')
         : _liveEvents.first.description.trim().isEmpty
         ? _humanize(context, _liveEvents.first.type)
         : _liveEvents.first.description.trim();
@@ -1588,7 +2143,7 @@ class _ThreadDetailPaneState extends State<ThreadDetailPane>
                   showLiveStatus: !compactLayout,
                   liveStateLabel: _liveConnectionState.name,
                   liveMessage: liveMessage,
-                  hasActiveTurn: _runtime.activeTurnId != null,
+                  hasActiveTurn: _hasActiveTurnInFlight,
                   stickToBottom: _followConversation && !_userScrollInProgress,
                   showScrollToBottomButton: showScrollToBottomButton,
                   onScrollToBottom: () {
@@ -1640,7 +2195,10 @@ class _ThreadDetailPaneState extends State<ThreadDetailPane>
               submitting: _submitting,
               loadingModels: _modelsLoading,
               runtimeLoading: _runtimeLoading,
-              hasActiveTurn: _runtime.activeTurnId != null,
+              hasActiveTurn: _hasActiveTurnInFlight,
+              queuedSubmissionCount: _queuedComposerSubmissions.length,
+              queuedSubmissionPreview: _latestQueuedComposerPreview(),
+              onOpenQueuedSubmissions: _openQueuedComposerSheet,
               onSubmit: _submitComposer,
               onInterrupt: _interruptTurn,
               onPickAttachments: _pickComposerAttachments,
@@ -1806,10 +2364,10 @@ class _WorkspaceHeaderPanel extends StatelessWidget {
       _humanize(context, thread.status),
       _humanize(context, liveConnectionState.name),
       activeTurnId == null
-          ? strings.text('Idle', '绌洪棽')
+          ? strings.text('Idle', 'Idle')
           : strings.text('Active turn', '当前轮次进行中'),
       if (pendingCount > 0)
-        strings.text('$pendingCount pending', '$pendingCount 涓緟澶勭悊'),
+        strings.text('$pendingCount pending', '$pendingCount 个待处理'),
       if (thread.cwd != null) _workspaceLabel(context, thread.cwd),
       _formatRelative(context, thread.updatedAt),
     ].join(' ? ');
@@ -1859,7 +2417,7 @@ class _WorkspaceHeaderPanel extends StatelessWidget {
                 onPressed: () {
                   unawaited(onRefresh());
                 },
-                tooltip: strings.text('Refresh', '鍒锋柊'),
+                tooltip: strings.text('Refresh', 'Refresh'),
                 visualDensity: VisualDensity.compact,
                 iconSize: 18,
                 splashRadius: 18,
@@ -1880,7 +2438,7 @@ class _WorkspaceHeaderPanel extends StatelessWidget {
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   Text(
-                    strings.text('Current session', '褰撳墠浼氳瘽'),
+                    strings.text('Current session', '瑜版挸澧犳导姘崇樈'),
                     style: theme.textTheme.labelMedium?.copyWith(
                       color: secondaryTextColor(theme),
                       letterSpacing: 0.6,
@@ -1903,7 +2461,7 @@ class _WorkspaceHeaderPanel extends StatelessWidget {
               onPressed: () {
                 unawaited(onRefresh());
               },
-              tooltip: strings.text('Refresh', '鍒锋柊'),
+              tooltip: strings.text('Refresh', 'Refresh'),
               visualDensity: VisualDensity.compact,
               iconSize: 18,
               icon: const Icon(Icons.sync),
@@ -1926,7 +2484,7 @@ class _WorkspaceHeaderPanel extends StatelessWidget {
                   children: [
                     if (!workspaceStyle) ...[
                       Text(
-                        strings.text('Current session', '褰撳墠浼氳瘽'),
+                        strings.text('Current session', '瑜版挸澧犳导姘崇樈'),
                         style: theme.textTheme.labelLarge?.copyWith(
                           color: secondaryTextColor(theme),
                           letterSpacing: 1.1,
@@ -1946,12 +2504,12 @@ class _WorkspaceHeaderPanel extends StatelessWidget {
                         _SessionMetaBadge(
                           compact: workspaceStyle,
                           value:
-                              '${strings.text('Live', '瀹炴椂')} ${_humanize(context, liveConnectionState.name)}',
+                              '${strings.text('Live', 'Live')} ${_humanize(context, liveConnectionState.name)}',
                         ),
                         _SessionMetaBadge(
                           compact: workspaceStyle,
                           value: activeTurnId == null
-                              ? strings.text('Turn idle', '杞绌洪棽')
+                              ? strings.text('Turn idle', '轮次空闲')
                               : strings.text('Turn active', '轮次进行中'),
                         ),
                       ],
@@ -1999,7 +2557,7 @@ class _WorkspaceHeaderPanel extends StatelessWidget {
                   onPressed: () {
                     unawaited(onRefresh());
                   },
-                  tooltip: strings.text('Refresh', '鍒锋柊'),
+                  tooltip: strings.text('Refresh', 'Refresh'),
                   visualDensity: VisualDensity.compact,
                   icon: const Icon(Icons.sync),
                 )
@@ -2009,7 +2567,7 @@ class _WorkspaceHeaderPanel extends StatelessWidget {
                     unawaited(onRefresh());
                   },
                   icon: const Icon(Icons.sync),
-                  label: Text(strings.text('Refresh', '鍒锋柊')),
+                  label: Text(strings.text('Refresh', 'Refresh')), 
                 ),
             ],
           ),
@@ -2028,7 +2586,7 @@ class _WorkspaceHeaderPanel extends StatelessWidget {
                   value: _humanize(context, thread.status),
                 ),
                 _InfoChip(
-                  label: strings.text('Live', '瀹炴椂'),
+                  label: strings.text('Live', 'Live'),
                   value: _humanize(context, liveConnectionState.name),
                 ),
                 _InfoChip(
@@ -2036,9 +2594,9 @@ class _WorkspaceHeaderPanel extends StatelessWidget {
                   value: '$pendingCount',
                 ),
                 _InfoChip(
-                  label: strings.text('Turn', '杞'),
+                  label: strings.text('Turn', 'Turn'),
                   value: activeTurnId == null
-                      ? strings.text('idle', '绌洪棽')
+                      ? strings.text('idle', 'idle')
                       : strings.text('active', '进行中'),
                 ),
               ],
@@ -2114,7 +2672,7 @@ class _PendingRequestsPanel extends StatelessWidget {
     final strings = context.strings;
     final summary = strings.text(
       '${requests.length} pending request${requests.length == 1 ? '' : 's'}',
-      '${requests.length} 涓緟澶勭悊璇锋眰',
+      '${requests.length} pending request${requests.length == 1 ? '' : 's'}',
     );
     final firstTitle = requests.first.title.trim();
     return _SurfaceSection(
@@ -2147,7 +2705,7 @@ class _PendingRequestsPanel extends StatelessWidget {
                         const SizedBox(height: 4),
                         Text(
                           workspaceStyle && !expanded && firstTitle.isNotEmpty
-                              ? '$summary 路 $firstTitle'
+                              ? '$summary - $firstTitle'
                               : strings.text(
                                   'Approvals and follow-up prompts from the active session.',
                                   '当前会话中的审批和后续提示会显示在这里。',
@@ -2172,8 +2730,8 @@ class _PendingRequestsPanel extends StatelessWidget {
                       ),
                       label: Text(
                         expanded
-                            ? strings.text('Hide', '鏀惰捣')
-                            : strings.text('Show', '灞曞紑'),
+                            ? strings.text('Hide', '隐藏')
+                            : strings.text('Show', 'Show'),
                       ),
                     ),
                   ],
@@ -2307,7 +2865,7 @@ class _PendingRequestCard extends StatelessWidget {
                         unawaited(onCopyUrl(request.url!));
                       },
                 icon: const Icon(Icons.copy_all_outlined),
-                label: Text(strings.text('Copy URL', '澶嶅埗 URL')),
+                label: Text(strings.text('Copy URL', '复制 URL')),
               ),
             ],
             const SizedBox(height: 14),
@@ -2357,6 +2915,230 @@ class _PendingRequestCard extends StatelessWidget {
   }
 }
 
+class _QueuedComposerPanel extends StatelessWidget {
+  const _QueuedComposerPanel({
+    required this.submissions,
+    required this.summary,
+    required this.busy,
+    required this.hasActiveTurn,
+    required this.onEdit,
+    required this.onDelete,
+    required this.onSteer,
+    this.workspaceStyle = false,
+  });
+
+  final List<_QueuedComposerSubmission> submissions;
+  final String summary;
+  final bool busy;
+  final bool hasActiveTurn;
+  final Future<void> Function(_QueuedComposerSubmission submission) onEdit;
+  final Future<void> Function(_QueuedComposerSubmission submission) onDelete;
+  final Future<void> Function(_QueuedComposerSubmission submission) onSteer;
+  final bool workspaceStyle;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final strings = context.strings;
+    return _SurfaceSection(
+      workspaceStyle: workspaceStyle,
+      compact: true,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            strings.text('Queued Prompts', 'Queued Prompts'),
+            style: (workspaceStyle
+                        ? theme.textTheme.titleMedium
+                        : theme.textTheme.titleLarge)
+                    ?.copyWith(fontWeight: FontWeight.w700),
+          ),
+          const SizedBox(height: 2),
+          Text(
+            hasActiveTurn
+                ? strings.text(
+                    '$summary. You can steer a queued prompt into the active turn.',
+                    '$summary。可以把排队项 steer 到当前活跃轮次。',
+                  )
+                : strings.text(
+                    '$summary. Remaining prompts will send automatically.',
+                    '$summary. Remaining prompts will send automatically.',
+                  ),
+            style: theme.textTheme.bodyMedium?.copyWith(
+              color: secondaryTextColor(theme),
+            ),
+          ),
+          const SizedBox(height: 8),
+          ...submissions.asMap().entries.map(
+            (entry) => Padding(
+              padding: EdgeInsets.only(
+                bottom: entry.key == submissions.length - 1 ? 0 : 8,
+              ),
+              child: _QueuedComposerCard(
+                submission: entry.value,
+                position: entry.key + 1,
+                busy: busy,
+                canSteer: hasActiveTurn && !busy,
+                onEdit: onEdit,
+                onDelete: onDelete,
+                onSteer: onSteer,
+                compact: workspaceStyle,
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _QueuedComposerCard extends StatelessWidget {
+  const _QueuedComposerCard({
+    required this.submission,
+    required this.position,
+    required this.busy,
+    required this.canSteer,
+    required this.onEdit,
+    required this.onDelete,
+    required this.onSteer,
+    this.compact = false,
+  });
+
+  final _QueuedComposerSubmission submission;
+  final int position;
+  final bool busy;
+  final bool canSteer;
+  final Future<void> Function(_QueuedComposerSubmission submission) onEdit;
+  final Future<void> Function(_QueuedComposerSubmission submission) onDelete;
+  final Future<void> Function(_QueuedComposerSubmission submission) onSteer;
+  final bool compact;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final strings = context.strings;
+    final metadata = <String>[
+      '#$position',
+      _permissionLabel(context, submission.mode),
+      if (submission.modelId?.trim().isNotEmpty == true) submission.modelId!,
+      if (submission.attachmentCount > 0)
+        strings.text(
+          '${submission.attachmentCount} attachment${submission.attachmentCount == 1 ? '' : 's'}',
+          '${submission.attachmentCount} 个附件',
+        ),
+    ];
+
+    return DecoratedBox(
+      decoration: BoxDecoration(
+        color: mutedPanelBackgroundColor(theme),
+        borderRadius: BorderRadius.circular(compact ? 12 : 14),
+        border: Border.all(color: borderColor(theme)),
+      ),
+      child: Padding(
+        padding: EdgeInsets.all(compact ? 10 : 12),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              submission.preview.isEmpty
+                  ? strings.text('Queued prompt', 'Queued prompt')
+                  : submission.preview,
+              maxLines: compact ? 3 : 4,
+              overflow: TextOverflow.ellipsis,
+              style: (compact
+                          ? theme.textTheme.titleSmall
+                          : theme.textTheme.titleMedium)
+                      ?.copyWith(fontWeight: FontWeight.w700, height: 1.2),
+            ),
+            if (metadata.isNotEmpty) ...[
+              const SizedBox(height: 4),
+              Text(
+                metadata.join('  -  '),
+                style: theme.textTheme.bodySmall?.copyWith(
+                  color: secondaryTextColor(theme),
+                  height: 1.2,
+                ),
+              ),
+            ],
+            if (submission.textPrompt.trim().isEmpty &&
+                submission.attachmentCount > 0) ...[
+              const SizedBox(height: 4),
+              Text(
+                strings.text(
+                  'This queued item currently contains attachments only.',
+                  'This queued item currently contains attachments only.',
+                ),
+                style: theme.textTheme.bodySmall?.copyWith(
+                  color: secondaryTextColor(theme),
+                  height: 1.2,
+                ),
+              ),
+            ],
+            const SizedBox(height: 8),
+            Wrap(
+              spacing: 6,
+              runSpacing: 6,
+              children: [
+                FilledButton.tonalIcon(
+                  onPressed: canSteer
+                      ? () {
+                          unawaited(onSteer(submission));
+                        }
+                      : null,
+                  icon: const Icon(Icons.alt_route_rounded),
+                  label: Text(strings.text('Steer', 'Steer')),
+                  style: FilledButton.styleFrom(
+                    visualDensity: VisualDensity.compact,
+                    tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 12,
+                      vertical: 8,
+                    ),
+                  ),
+                ),
+                OutlinedButton.icon(
+                  onPressed: busy
+                      ? null
+                      : () {
+                          unawaited(onEdit(submission));
+                        },
+                  icon: const Icon(Icons.edit_outlined),
+                  label: Text(strings.text('Edit', 'Edit')), 
+                  style: OutlinedButton.styleFrom(
+                    visualDensity: VisualDensity.compact,
+                    tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 12,
+                      vertical: 8,
+                    ),
+                  ),
+                ),
+                OutlinedButton.icon(
+                  onPressed: busy
+                      ? null
+                      : () {
+                          unawaited(onDelete(submission));
+                        },
+                  icon: const Icon(Icons.delete_outline),
+                  label: Text(strings.text('Delete', 'Delete')), 
+                  style: OutlinedButton.styleFrom(
+                    visualDensity: VisualDensity.compact,
+                    tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 12,
+                      vertical: 8,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
 class _ComposerDock extends StatelessWidget {
   const _ComposerDock({
     required this.composerController,
@@ -2370,6 +3152,9 @@ class _ComposerDock extends StatelessWidget {
     required this.loadingModels,
     required this.runtimeLoading,
     required this.hasActiveTurn,
+    required this.queuedSubmissionCount,
+    required this.queuedSubmissionPreview,
+    required this.onOpenQueuedSubmissions,
     required this.onSubmit,
     required this.onInterrupt,
     required this.onPickAttachments,
@@ -2390,6 +3175,9 @@ class _ComposerDock extends StatelessWidget {
   final bool loadingModels;
   final bool runtimeLoading;
   final bool hasActiveTurn;
+  final int queuedSubmissionCount;
+  final String queuedSubmissionPreview;
+  final Future<void> Function() onOpenQueuedSubmissions;
   final Future<void> Function() onSubmit;
   final Future<void> Function() onInterrupt;
   final Future<void> Function() onPickAttachments;
@@ -2430,10 +3218,10 @@ class _ComposerDock extends StatelessWidget {
       }
     }
     final modelLabel = loadingModels && models.isEmpty
-        ? strings.text('Loading models', '鍔犺浇妯″瀷')
+        ? strings.text('Loading models', 'Loading models')
         : selectedModel?.displayName ??
               selectedModelId ??
-              strings.text('Model auto', '妯″瀷鑷姩');
+              strings.text('Model auto', '模型自动');
     final reasoningLabel = _reasoningEffortLabel(context, selectedModel);
     final permissionLabel = _permissionLabel(context, selectedMode);
     final composerLabel = compactWorkspace
@@ -2447,7 +3235,7 @@ class _ComposerDock extends StatelessWidget {
       label: modelLabel,
       compact: true,
       enabled: !loadingModels && !submitting && models.isNotEmpty,
-      tooltip: strings.text('Select model', '閫夋嫨妯″瀷'),
+      tooltip: strings.text('Select model', 'Select model'),
       items: models
           .map(
             (model) => PopupMenuItem<String>(
@@ -2474,7 +3262,7 @@ class _ComposerDock extends StatelessWidget {
       label: permissionLabel,
       compact: true,
       enabled: !submitting,
-      tooltip: strings.text('Select permissions', '閫夋嫨鏉冮檺'),
+      tooltip: strings.text('Select permissions', '选择权限'),
       items: CodexComposerMode.values
           .map(
             (mode) => PopupMenuItem<CodexComposerMode>(
@@ -2498,7 +3286,7 @@ class _ComposerDock extends StatelessWidget {
       onSelected: onModeChanged,
     );
     final attachmentButton = Tooltip(
-      message: strings.text('Add image or file', '添加图片或文件'),
+      message: strings.text('Add image or file', 'Add image or file'),
       child: IconButton(
         onPressed: submitting || runtimeLoading
             ? null
@@ -2517,8 +3305,11 @@ class _ComposerDock extends StatelessWidget {
       builder: (context, value, _) {
         final interruptAction =
             hasActiveTurn && value.text.trim().isEmpty && attachments.isEmpty;
+        final actionTooltip = interruptAction
+            ? strings.text('Stop response', 'Stop response')
+            : strings.text('Send prompt', 'Send prompt');
         return Tooltip(
-          message: strings.text('Send prompt', '鍙戦€佹彁绀鸿瘝'),
+          message: actionTooltip,
           child: IconButton.filled(
             onPressed: submitting || runtimeLoading
                 ? null
@@ -2526,15 +3317,23 @@ class _ComposerDock extends StatelessWidget {
                     unawaited(interruptAction ? onInterrupt() : onSubmit());
                   },
             style: IconButton.styleFrom(
-              backgroundColor: theme.colorScheme.primary,
-              foregroundColor: theme.colorScheme.onPrimary,
-              disabledBackgroundColor: theme.colorScheme.primary.withValues(
-                alpha: 0.28,
-              ),
-              disabledForegroundColor: theme.colorScheme.onPrimary.withValues(
-                alpha: 0.55,
-              ),
-              minimumSize: Size(32, 32),
+              backgroundColor: interruptAction
+                  ? theme.colorScheme.error
+                  : theme.colorScheme.primary,
+              foregroundColor: interruptAction
+                  ? theme.colorScheme.onError
+                  : theme.colorScheme.onPrimary,
+              disabledBackgroundColor:
+                  (interruptAction
+                          ? theme.colorScheme.error
+                          : theme.colorScheme.primary)
+                      .withValues(alpha: 0.28),
+              disabledForegroundColor:
+                  (interruptAction
+                          ? theme.colorScheme.onError
+                          : theme.colorScheme.onPrimary)
+                      .withValues(alpha: 0.55),
+              minimumSize: const Size(32, 32),
             ),
             icon: submitting
                 ? const SizedBox(
@@ -2542,7 +3341,12 @@ class _ComposerDock extends StatelessWidget {
                     height: 14,
                     child: CircularProgressIndicator(strokeWidth: 2),
                   )
-                : Icon(Icons.arrow_upward_rounded, size: 16),
+                : Icon(
+                    interruptAction
+                        ? Icons.stop_rounded
+                        : Icons.arrow_upward_rounded,
+                    size: 16,
+                  ),
           ),
         );
       },
@@ -2582,7 +3386,11 @@ class _ComposerDock extends StatelessWidget {
               SubmitComposerIntent: CallbackAction<SubmitComposerIntent>(
                 onInvoke: (intent) {
                   if (!submitting && !runtimeLoading) {
-                    unawaited(onSubmit());
+                    final interruptAction =
+                        hasActiveTurn &&
+                        composerController.text.trim().isEmpty &&
+                        attachments.isEmpty;
+                    unawaited(interruptAction ? onInterrupt() : onSubmit());
                   }
                   return null;
                 },
@@ -2693,22 +3501,54 @@ class _ComposerDock extends StatelessWidget {
         ],
       ),
     );
+    final queueDivider = queuedSubmissionCount > 0
+        ? Padding(
+            padding: EdgeInsets.fromLTRB(
+              compactWorkspace ? 8 : 4,
+              0,
+              compactWorkspace ? 8 : 4,
+              compactWorkspace ? 4 : 6,
+            ),
+            child: _QueuedComposerDockTrigger(
+              label: queuedSubmissionPreview.isEmpty
+                  ? strings.text(
+                      'Queued $queuedSubmissionCount',
+                      '排队 $queuedSubmissionCount',
+                    )
+                  : queuedSubmissionPreview,
+              onTap: () {
+                unawaited(onOpenQueuedSubmissions());
+              },
+              workspaceStyle: compactWorkspace,
+            ),
+          )
+        : null;
     if (compactWorkspace) {
       return DecoratedBox(
         decoration: BoxDecoration(
           color: panelBackgroundColor(theme),
-          border: Border(top: BorderSide(color: borderColor(theme))),
+          border: queuedSubmissionCount > 0
+              ? null
+              : Border(top: BorderSide(color: borderColor(theme))),
         ),
         child: SafeArea(
           top: false,
           child: Padding(
             padding: EdgeInsets.fromLTRB(
               comfortableCompactComposer ? 12 : 10,
-              comfortableCompactComposer ? 10 : 6,
+              queuedSubmissionCount > 0
+                  ? (comfortableCompactComposer ? 6 : 2)
+                  : (comfortableCompactComposer ? 10 : 6),
               comfortableCompactComposer ? 12 : 10,
               comfortableCompactComposer ? 12 : 8,
             ),
-            child: composerField,
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                ...?queueDivider == null ? null : [queueDivider],
+                composerField,
+              ],
+            ),
           ),
         ),
       );
@@ -2716,26 +3556,112 @@ class _ComposerDock extends StatelessWidget {
     return DecoratedBox(
       decoration: BoxDecoration(
         color: panelBackgroundColor(theme),
-        border: Border(top: BorderSide(color: borderColor(theme))),
+        border: queuedSubmissionCount > 0
+            ? null
+            : Border(top: BorderSide(color: borderColor(theme))),
       ),
       child: SafeArea(
         top: false,
         child: Padding(
           padding: EdgeInsets.fromLTRB(
             compactWorkspace ? 10 : 16,
-            compactWorkspace ? 4 : 14,
+            queuedSubmissionCount > 0 ? (compactWorkspace ? 2 : 6) : (compactWorkspace ? 4 : 14),
             compactWorkspace ? 10 : 16,
             compactWorkspace ? 8 : 16,
           ),
           child: Column(
             mainAxisSize: MainAxisSize.min,
             crossAxisAlignment: CrossAxisAlignment.start,
-            children: [composerField],
+            children: [
+              ...?queueDivider == null ? null : [queueDivider],
+              composerField,
+            ],
           ),
         ),
       ),
     );
   }
+}
+
+class _QueuedComposerDockTrigger extends StatelessWidget {
+  const _QueuedComposerDockTrigger({
+    required this.label,
+    required this.onTap,
+    required this.workspaceStyle,
+  });
+
+  final String label;
+  final VoidCallback onTap;
+  final bool workspaceStyle;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final textColor = secondaryTextColor(theme);
+    return Material(
+      color: Colors.transparent,
+      child: InkWell(
+        onTap: onTap,
+        borderRadius: BorderRadius.circular(999),
+        child: Padding(
+          padding: EdgeInsets.symmetric(
+            vertical: workspaceStyle ? 2 : 4,
+            horizontal: workspaceStyle ? 2 : 4,
+          ),
+          child: Row(
+            children: [
+              Expanded(child: Divider(color: borderColor(theme), height: 1)),
+              ConstrainedBox(
+                constraints: BoxConstraints(
+                  maxWidth: workspaceStyle ? 220 : 320,
+                ),
+                child: Padding(
+                  padding: EdgeInsets.symmetric(
+                    horizontal: workspaceStyle ? 10 : 12,
+                  ),
+                  child: Text(
+                    label.trim().isEmpty
+                        ? context.strings.text('Queued prompts', 'Queued prompts')
+                        : label.trim(),
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    textAlign: TextAlign.center,
+                    style: theme.textTheme.bodySmall?.copyWith(
+                      color: textColor,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                ),
+              ),
+              Expanded(child: Divider(color: borderColor(theme), height: 1)),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _QueuedComposerSubmission {
+  const _QueuedComposerSubmission({
+    required this.id,
+    required this.input,
+    required this.mode,
+    required this.modelId,
+  });
+
+  final String id;
+  final List<CodexInputPart> input;
+  final CodexComposerMode mode;
+  final String? modelId;
+
+  String get preview => renderCodexInputPreview(input);
+  String get textPrompt => input
+      .where((part) => part.type == CodexInputPartType.text)
+      .map((part) => part.text?.trim() ?? '')
+      .where((value) => value.isNotEmpty)
+      .join('\n');
+  int get attachmentCount => input.where((part) => part.isAttachment).length;
 }
 
 class _PendingRequestSubmission {
@@ -2851,13 +3777,13 @@ class _PendingRequestDialogState extends State<_PendingRequestDialog> {
           onPressed: () {
             Navigator.of(context).pop();
           },
-          child: Text(strings.text('Close', '鍏抽棴')),
+          child: Text(strings.text('Close', 'Close')), 
         ),
         FilledButton(
           onPressed: () {
             Navigator.of(context).pop(_collectSubmission());
           },
-          child: Text(strings.text('Submit', '鎻愪氦')),
+          child: Text(strings.text('Submit', 'Submit')), 
         ),
       ],
     );
@@ -2912,10 +3838,10 @@ class _PendingRequestDialogState extends State<_PendingRequestDialog> {
             TextField(
               controller: controller,
               decoration: InputDecoration(
-                labelText: context.strings.text('Other', '鍏朵粬'),
+                labelText: context.strings.text('Other', 'Other'),
                 hintText: context.strings.text(
                   'Enter a custom answer',
-                  '输入自定义答案',
+                  'Enter a custom answer',
                 ),
               ),
             ),
@@ -3193,7 +4119,7 @@ class _ComposerAttachmentChip extends StatelessWidget {
         children: [
           if (isLocalImage) ...[
             Tooltip(
-              message: context.strings.text('Preview', '预览'),
+              message: context.strings.text('Preview', 'Preview'),
               child: Material(
                 color: Colors.transparent,
                 child: InkWell(
@@ -3329,7 +4255,7 @@ class _ComposerImagePreviewDialog extends StatelessWidget {
                 child: Row(
                   children: [
                     Text(
-                      context.strings.text('Preview', '预览'),
+                      context.strings.text('Preview', 'Preview'),
                       style: theme.textTheme.titleSmall?.copyWith(
                         fontWeight: FontWeight.w700,
                       ),
@@ -3576,7 +4502,7 @@ String _humanize(BuildContext context, String value) {
 String _providerLabel(BuildContext context, String? value) {
   final normalized = value?.trim();
   if (normalized == null || normalized.isEmpty) {
-    return context.strings.text('Unknown provider', '鏈煡 Provider');
+    return context.strings.text('Unknown provider', '未知提供方');
   }
   return normalized;
 }
@@ -3590,18 +4516,18 @@ String _modeLabel(BuildContext context, CodexComposerMode mode) {
     ),
     CodexComposerMode.agentFullAccess => context.strings.text(
       'Includes outside project',
-      '包括项目外路径',
+      '包含项目外路径',
     ),
   };
 }
 
 String _permissionLabel(BuildContext context, CodexComposerMode mode) {
   return switch (mode) {
-    CodexComposerMode.chat => context.strings.text('Read only', '鍙'),
+    CodexComposerMode.chat => context.strings.text('Read only', 'Read only'),
     CodexComposerMode.agent => context.strings.text('Edit project', '项目内修改'),
     CodexComposerMode.agentFullAccess => context.strings.text(
       'Full access',
-      '瀹屽叏璁块棶',
+      '完全访问',
     ),
   };
 }
@@ -3621,10 +4547,10 @@ String _reasoningEffortLabel(
     'low' => context.strings.text('Low', '低'),
     'medium' => context.strings.text('Medium', '中'),
     'high' => context.strings.text('High', '高'),
-    'very_high' || 'very-high' => context.strings.text('Very high', '瓒呴珮'),
+    'very_high' || 'very-high' => context.strings.text('Very high', '超高'),
     _ when rawValue.isNotEmpty => context.strings.humanizeMachineLabel(
       rawValue,
     ),
-    _ => context.strings.text('Auto', '鑷姩'),
+    _ => context.strings.text('Auto', '自动'),
   };
 }
