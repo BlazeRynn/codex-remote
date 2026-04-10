@@ -2855,11 +2855,80 @@ class _PendingRequestCard extends StatelessWidget {
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final strings = context.strings;
+    final isApprovalCard = request.kind.contains('approval');
+    final summaryParts = <String>[
+      request.title.trim(),
+      request.message.trim(),
+      request.detail?.trim() ?? '',
+      request.command?.trim() ?? '',
+      request.cwd?.trim() ?? '',
+    ].where((part) => part.isNotEmpty).toList(growable: false);
+    final summaryText =
+        summaryParts.isEmpty ? request.kind : summaryParts.join(' · ');
     final structuredAction = request.actions.where(
       (action) =>
           !action.destructive &&
           (action.id == 'submit' || action.id == 'accept'),
     );
+    final actionButtons = <Widget>[
+      ...structuredAction.map(
+        (action) => FilledButton(
+          onPressed: busy
+              ? null
+              : () {
+                  unawaited(onOpenStructuredRequest(request));
+                },
+          style: FilledButton.styleFrom(
+            visualDensity: VisualDensity.compact,
+            tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+          ),
+          child: Text(action.label),
+        ),
+      ),
+      ...request.actions
+          .where((action) => structuredAction.contains(action) == false)
+          .map(
+            (action) => action.destructive
+                ? OutlinedButton(
+                    onPressed: busy
+                        ? null
+                        : () {
+                            unawaited(onRespond(request, action.id));
+                          },
+                    style: OutlinedButton.styleFrom(
+                      visualDensity: VisualDensity.compact,
+                      tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                    ),
+                    child: Text(action.label),
+                  )
+                : FilledButton.tonal(
+                    onPressed: busy
+                        ? null
+                        : () {
+                            unawaited(onRespond(request, action.id));
+                          },
+                    style: FilledButton.styleFrom(
+                      visualDensity: VisualDensity.compact,
+                      tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                    ),
+                    child: Text(action.label),
+                  ),
+          ),
+      if ((request.url ?? '').trim().isNotEmpty)
+        OutlinedButton.icon(
+          onPressed: busy
+              ? null
+              : () {
+                  unawaited(onCopyUrl(request.url!));
+                },
+          icon: const Icon(Icons.copy_all_outlined, size: 16),
+          style: OutlinedButton.styleFrom(
+            visualDensity: VisualDensity.compact,
+            tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+          ),
+          label: Text(strings.text('Copy URL', '复制 URL')),
+        ),
+    ];
 
     return DecoratedBox(
       decoration: BoxDecoration(
@@ -2872,114 +2941,98 @@ class _PendingRequestCard extends StatelessWidget {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Row(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(
-                        request.title,
-                        style:
-                            (compact
-                                    ? theme.textTheme.titleSmall
-                                    : theme.textTheme.titleMedium)
-                                ?.copyWith(fontWeight: FontWeight.w700),
-                      ),
-                      const SizedBox(height: 4),
-                      Text(
-                        request.message,
-                        style: compact
-                            ? theme.textTheme.bodySmall
-                            : theme.textTheme.bodyMedium,
-                      ),
-                    ],
-                  ),
-                ),
-                const SizedBox(width: 12),
-                _StatusPill(label: request.kind, compact: compact),
-              ],
-            ),
-            if (request.detail != null) ...[
-              const SizedBox(height: 8),
-              Text(
-                request.detail!,
-                style: theme.textTheme.bodySmall?.copyWith(
-                  color: secondaryTextColor(theme),
-                ),
-              ),
-            ],
-            if (request.command != null) ...[
-              const SizedBox(height: 8),
-              SelectableText(
-                request.command!,
-                style: appCodeTextStyle(theme.textTheme.bodySmall),
-              ),
-            ],
-            if (request.cwd != null) ...[
-              const SizedBox(height: 4),
-              Text(
-                request.cwd!,
-                style: theme.textTheme.bodySmall?.copyWith(
-                  color: secondaryTextColor(theme),
-                ),
-              ),
-            ],
-            if (request.url != null) ...[
-              const SizedBox(height: 8),
-              SelectableText(request.url!),
-              const SizedBox(height: 8),
-              OutlinedButton.icon(
-                onPressed: busy
-                    ? null
-                    : () {
-                        unawaited(onCopyUrl(request.url!));
-                      },
-                icon: const Icon(Icons.copy_all_outlined),
-                label: Text(strings.text('Copy URL', '复制 URL')),
-              ),
-            ],
-            const SizedBox(height: 14),
-            Wrap(
-              spacing: 8,
-              runSpacing: 8,
-              children: [
-                ...structuredAction.map(
-                  (action) => FilledButton(
-                    onPressed: busy
-                        ? null
-                        : () {
-                            unawaited(onOpenStructuredRequest(request));
-                          },
-                    child: Text(action.label),
-                  ),
-                ),
-                ...request.actions
-                    .where(
-                      (action) => structuredAction.contains(action) == false,
-                    )
-                    .map(
-                      (action) => action.destructive
-                          ? OutlinedButton(
-                              onPressed: busy
-                                  ? null
-                                  : () {
-                                      unawaited(onRespond(request, action.id));
-                                    },
-                              child: Text(action.label),
-                            )
-                          : FilledButton.tonal(
-                              onPressed: busy
-                                  ? null
-                                  : () {
-                                      unawaited(onRespond(request, action.id));
-                                    },
-                              child: Text(action.label),
-                            ),
+            if (isApprovalCard) ...[
+              Row(
+                children: [
+                  Expanded(
+                    child: Text(
+                      summaryText,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: compact
+                          ? theme.textTheme.bodySmall
+                          : theme.textTheme.bodyMedium,
                     ),
+                  ),
+                  const SizedBox(width: 10),
+                  _StatusPill(label: request.kind, compact: compact),
+                ],
+              ),
+              const SizedBox(height: 8),
+              SingleChildScrollView(
+                scrollDirection: Axis.horizontal,
+                child: Row(
+                  children: [
+                    for (var index = 0; index < actionButtons.length; index++)
+                      ...[
+                        if (index > 0) const SizedBox(width: 8),
+                        actionButtons[index],
+                      ],
+                  ],
+                ),
+              ),
+            ] else ...[
+              Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          request.title,
+                          style:
+                              (compact
+                                      ? theme.textTheme.titleSmall
+                                      : theme.textTheme.titleMedium)
+                                  ?.copyWith(fontWeight: FontWeight.w700),
+                        ),
+                        const SizedBox(height: 4),
+                        Text(
+                          request.message,
+                          style: compact
+                              ? theme.textTheme.bodySmall
+                              : theme.textTheme.bodyMedium,
+                        ),
+                      ],
+                    ),
+                  ),
+                  const SizedBox(width: 12),
+                  _StatusPill(label: request.kind, compact: compact),
+                ],
+              ),
+              if (request.detail != null) ...[
+                const SizedBox(height: 8),
+                Text(
+                  request.detail!,
+                  style: theme.textTheme.bodySmall?.copyWith(
+                    color: secondaryTextColor(theme),
+                  ),
+                ),
               ],
-            ),
+              if (request.command != null) ...[
+                const SizedBox(height: 8),
+                SelectableText(
+                  request.command!,
+                  style: appCodeTextStyle(theme.textTheme.bodySmall),
+                ),
+              ],
+              if (request.cwd != null) ...[
+                const SizedBox(height: 4),
+                Text(
+                  request.cwd!,
+                  style: theme.textTheme.bodySmall?.copyWith(
+                    color: secondaryTextColor(theme),
+                  ),
+                ),
+              ],
+              if (request.url != null) ...[
+                const SizedBox(height: 8),
+                SelectableText(request.url!),
+              ],
+              const SizedBox(height: 14),
+              Wrap(spacing: 8, runSpacing: 8, children: actionButtons),
+            ],
           ],
         ),
       ),
