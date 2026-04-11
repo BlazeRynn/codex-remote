@@ -450,8 +450,9 @@ class _ThreadListScreenState extends State<ThreadListScreen> {
   }) {
     final currentSelectedId = _selectedThreadId;
     final eventThreadId = realtimeEventThreadId(event);
+    final eventStatus = realtimeEventThreadStatusType(event);
     if (event.type != 'thread.status' ||
-        realtimeEventThreadStatusType(event) != 'active' ||
+        eventStatus != 'active' ||
         eventThreadId == null) {
       return currentSelectedId;
     }
@@ -482,7 +483,7 @@ class _ThreadListScreenState extends State<ThreadListScreen> {
       return currentSelectedId;
     }
 
-    if (currentSelected.status != 'active') {
+    if (!_isThreadActiveInList(currentSelected)) {
       return eventThreadId;
     }
     return currentSelectedId;
@@ -567,15 +568,6 @@ class _ThreadListScreenState extends State<ThreadListScreen> {
             var next = thread;
             if (next.createdAt == null && current.createdAt != null) {
               next = next.copyWith(createdAt: current.createdAt);
-            }
-            if (current.status == 'active' && next.status != 'active') {
-              return next.copyWith(
-                status: 'active',
-                updatedAt: _laterThreadTimestamp(
-                  next.updatedAt,
-                  current.updatedAt,
-                ),
-              );
             }
             return next;
           })
@@ -1005,7 +997,6 @@ class _ThreadListScreenState extends State<ThreadListScreen> {
                           collapsed: _isWorkspaceCollapsed(group.cwd),
                           compact: false,
                           sidebarStyle: false,
-                          selectedThreadId: effectiveSelectedThreadId,
                           onToggleCollapsed: () {
                             _toggleWorkspaceCollapsed(group.cwd);
                           },
@@ -1736,8 +1727,11 @@ class _SidebarThreadTile extends StatelessWidget {
                         ),
                         const SizedBox(width: 10),
                         _ThreadPill(
-                          label: _humanize(context, thread.status),
-                          status: thread.status,
+                          label: _humanize(
+                            context,
+                            _threadListDisplayStatus(thread),
+                          ),
+                          status: _threadListDisplayStatus(thread),
                         ),
                         const SizedBox(width: 2),
                         _ThreadArchiveButton(
@@ -2261,8 +2255,8 @@ class _ThreadListItem extends StatelessWidget {
                   ),
                   const SizedBox(width: 10),
                   _ThreadPill(
-                    label: _humanize(context, thread.status),
-                    status: thread.status,
+                    label: _humanize(context, _threadListDisplayStatus(thread)),
+                    status: _threadListDisplayStatus(thread),
                     compact: true,
                   ),
                   const SizedBox(width: 2),
@@ -2304,7 +2298,6 @@ class _WorkspaceThreadGroupSection extends StatelessWidget {
   const _WorkspaceThreadGroupSection({
     required this.group,
     required this.collapsed,
-    required this.selectedThreadId,
     required this.onToggleCollapsed,
     required this.onSelectThread,
     required this.onToggleThreadArchived,
@@ -2312,6 +2305,7 @@ class _WorkspaceThreadGroupSection extends StatelessWidget {
     this.compact = false,
     this.sidebarStyle = false,
     this.spacing = 8,
+    this.selectedThreadId,
   });
 
   final WorkspaceThreadGroup group;
@@ -2482,6 +2476,14 @@ String _providerLabel(BuildContext context, String? value) {
 String _threadCardSubtitle(CodexThreadSummary thread) {
   final preview = thread.preview.trim();
   return preview.isEmpty ? thread.title : preview;
+}
+
+String _threadListDisplayStatus(CodexThreadSummary thread) {
+  return thread.status;
+}
+
+bool _isThreadActiveInList(CodexThreadSummary thread) {
+  return thread.status == 'active';
 }
 
 String _modeLabel(BuildContext context, CodexComposerMode mode) {

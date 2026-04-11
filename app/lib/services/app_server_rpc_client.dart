@@ -142,7 +142,14 @@ class AppServerRpcClient {
       ]).compareTo(readString(right, const ['id']));
     });
 
-    final summaries = threads.map(_mapThreadSummary).toList(growable: false);
+    final summaries = threads
+        .map(
+          (thread) => _mapThreadSummary(
+            thread,
+            isLoaded: loadedIds.contains(readString(thread, const ['id'])),
+          ),
+        )
+        .toList(growable: false);
     _logAppServerHistory('thread/list.result', {
       'count': summaries.length,
       'loadedCount': loadedIds.length,
@@ -905,7 +912,10 @@ class AppServerRpcClient {
     return asJsonMap(payload);
   }
 
-  CodexThreadSummary _mapThreadSummary(Map<String, dynamic> thread) {
+  CodexThreadSummary _mapThreadSummary(
+    Map<String, dynamic> thread, {
+    bool isLoaded = false,
+  }) {
     final turns = asJsonList(thread['turns']).map(asJsonMap);
     var itemCount = 0;
     for (final turn in turns) {
@@ -917,6 +927,7 @@ class AppServerRpcClient {
       title: _deriveThreadTitle(thread),
       status: _normalizeThreadStatus(asJsonMap(thread['status'])['type']),
       preview: _deriveThreadPreview(thread),
+      isLoaded: isLoaded,
       createdAt: _deriveThreadCreatedAt(thread),
       cwd: _normalizeCwd(readString(thread, const ['cwd'])),
       updatedAt: readDate(thread, const ['updatedAt', 'createdAt']),

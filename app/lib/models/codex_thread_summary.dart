@@ -6,6 +6,7 @@ class CodexThreadSummary {
     required this.title,
     required this.status,
     required this.preview,
+    this.isLoaded = false,
     this.createdAt,
     this.cwd,
     this.updatedAt,
@@ -17,6 +18,7 @@ class CodexThreadSummary {
   final String title;
   final String status;
   final String preview;
+  final bool isLoaded;
   final DateTime? createdAt;
   final String? cwd;
   final DateTime? updatedAt;
@@ -28,6 +30,7 @@ class CodexThreadSummary {
     String? title,
     String? status,
     String? preview,
+    bool? isLoaded,
     DateTime? createdAt,
     String? cwd,
     DateTime? updatedAt,
@@ -39,6 +42,7 @@ class CodexThreadSummary {
       title: title ?? this.title,
       status: status ?? this.status,
       preview: preview ?? this.preview,
+      isLoaded: isLoaded ?? this.isLoaded,
       createdAt: createdAt ?? this.createdAt,
       cwd: cwd ?? this.cwd,
       updatedAt: updatedAt ?? this.updatedAt,
@@ -64,6 +68,7 @@ class CodexThreadSummary {
         'snippet',
         'lastMessagePreview',
       ], fallback: 'No preview available yet.'),
+      isLoaded: readBool(json, const ['isLoaded', 'loaded']) ?? false,
       createdAt: readDate(json, const ['createdAt']),
       cwd:
           readString(json, const [

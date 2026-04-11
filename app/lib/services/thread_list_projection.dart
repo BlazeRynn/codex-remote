@@ -98,9 +98,7 @@ List<CodexThreadSummary> sortThreadsForDisplay(
 ) {
   final indexed = threads.indexed.toList(growable: false);
   indexed.sort((left, right) {
-    final activityOrder = _activityRank(
-      left.$2.status,
-    ).compareTo(_activityRank(right.$2.status));
+    final activityOrder = _activityRank(left.$2).compareTo(_activityRank(right.$2));
     if (activityOrder != 0) {
       return activityOrder;
     }
@@ -119,7 +117,7 @@ List<CodexThreadSummary> sortThreadsForDisplay(
 
 String? activeThreadIdOfThreads(List<CodexThreadSummary> threads) {
   for (final thread in threads) {
-    if (thread.status == 'active') {
+    if (_isThreadActiveInList(thread)) {
       return thread.id;
     }
   }
@@ -242,10 +240,10 @@ List<WorkspaceThreadGroup> workspaceThreadGroups(
       .toList(growable: false);
   groups.sort((left, right) {
     final leftHasActive = left.threads.any(
-      (thread) => thread.status == 'active',
+      _isThreadActiveInList,
     );
     final rightHasActive = right.threads.any(
-      (thread) => thread.status == 'active',
+      _isThreadActiveInList,
     );
     if (leftHasActive != rightHasActive) {
       return leftHasActive ? -1 : 1;
@@ -284,7 +282,7 @@ List<WorkspaceQuickSelection> workspaceQuickSelections(
       grouped[cwd] = WorkspaceQuickSelection(
         cwd: cwd,
         threadCount: 1,
-        hasActiveThread: thread.status == 'active',
+        hasActiveThread: _isThreadActiveInList(thread),
         latestActivityAt: latestActivityAt,
       );
       continue;
@@ -293,7 +291,7 @@ List<WorkspaceQuickSelection> workspaceQuickSelections(
     grouped[cwd] = WorkspaceQuickSelection(
       cwd: cwd,
       threadCount: current.threadCount + 1,
-      hasActiveThread: current.hasActiveThread || thread.status == 'active',
+      hasActiveThread: current.hasActiveThread || _isThreadActiveInList(thread),
       latestActivityAt: _laterTimestamp(
         current.latestActivityAt,
         latestActivityAt,
@@ -350,6 +348,7 @@ bool sameThreadSummary(CodexThreadSummary left, CodexThreadSummary right) {
       left.title == right.title &&
       left.status == right.status &&
       left.preview == right.preview &&
+      left.isLoaded == right.isLoaded &&
       _sameTimestamp(left.createdAt, right.createdAt) &&
       left.cwd == right.cwd &&
       left.itemCount == right.itemCount &&
@@ -427,11 +426,15 @@ List<CodexThreadSummary> _ensureSelectedThreadVisible(
   return sortThreadsForDisplay(merged.values.toList(growable: false));
 }
 
-int _activityRank(String status) {
-  return switch (status) {
+int _activityRank(CodexThreadSummary thread) {
+  return switch (thread.status.trim().toLowerCase()) {
     'active' => 0,
     _ => 1,
   };
+}
+
+bool _isThreadActiveInList(CodexThreadSummary thread) {
+  return thread.status == 'active';
 }
 
 String _workspaceSortLabel(String? value) {

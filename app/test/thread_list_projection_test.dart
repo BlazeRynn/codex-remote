@@ -30,6 +30,24 @@ void main() {
     ]);
   });
 
+  test('does not treat loaded idle threads as active', () {
+    final sorted = sortThreadsForDisplay([
+      _thread(
+        id: 'idle',
+        status: 'idle',
+        createdAt: DateTime.utc(2026, 4, 6),
+      ),
+      _thread(
+        id: 'loaded',
+        isLoaded: true,
+        createdAt: DateTime.utc(2026, 4, 5),
+      ),
+    ]);
+
+    expect(sorted.map((thread) => thread.id), ['idle', 'loaded']);
+    expect(activeThreadIdOfThreads(sorted), isNull);
+  });
+
   test(
     'keeps the selected workspace in focus when workspace scope is narrowed',
     () {
@@ -204,6 +222,7 @@ void main() {
 CodexThreadSummary _thread({
   required String id,
   String status = 'idle',
+  bool isLoaded = false,
   DateTime? createdAt,
   DateTime? updatedAt,
   String? cwd,
@@ -213,6 +232,7 @@ CodexThreadSummary _thread({
     title: 'Session $id',
     status: status,
     preview: 'Preview $id',
+    isLoaded: isLoaded,
     createdAt: createdAt,
     updatedAt: updatedAt,
     cwd: cwd,
