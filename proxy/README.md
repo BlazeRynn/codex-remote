@@ -46,6 +46,20 @@ Optional Windows local build output: proxy/build/codex-proxy.exe
 Optional macOS / Linux local build output: proxy/build/codex-proxy
 ```
 
+You can set it from the VS Code Settings UI, or directly in `settings.json`:
+
+```json
+{
+  "chatgpt.cliExecutable": "<path-to-your-repo>\\proxy\\codex-proxy.cmd"
+}
+```
+
+Important:
+
+- point the setting to the proxy executable itself
+- do not append `app-server`
+- do not append `--listen`
+
 When VS Code runs `codex app-server`, the proxy will:
 
 1. Start the real `codex app-server` over `stdio`
@@ -57,6 +71,9 @@ On macOS and Linux, make the source launcher executable before using it:
 ```bash
 chmod +x proxy/codex-proxy
 ```
+
+If the real `codex` executable is not on `PATH`, set
+`CODEX_PROXY_REAL_CLI` before launching VS Code.
 
 ## Flutter Setup
 

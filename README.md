@@ -1,155 +1,210 @@
 # Codex Remote
 
-Desktop and mobile companion for viewing and operating local Codex threads.
+[Chinese README](README.zh-CN.md)
 
-This repo currently contains:
+`Codex Remote` is a Flutter companion for local Codex sessions. Use it to
+browse threads, follow realtime updates, continue turns, respond to approvals,
+and steer or interrupt an active session from desktop or mobile.
 
-- `app/`: the Flutter client for Android, iOS, Windows, macOS, and Linux
-- `proxy/`: a local stdio tee proxy that mirrors VS Code's Codex session to WebSocket on Windows, macOS, and Linux
+## Repository Contents
 
-The Flutter app connects directly to the local Codex `app-server` over WebSocket. If you need remote exposure, keep that outside this repo behind your own network boundary such as `frp`.
+- `app/`: Flutter client for Android, iOS, Windows, macOS, and Linux
+- `proxy/`: local stdio tee proxy that mirrors a VS Code Codex session to
+  WebSocket clients
 
-## Goals
+## Requirements
 
-- View thread lists from the local Codex app-server
-- Read thread content, turns, and operation items
-- Watch live updates over a realtime channel
-- Create and continue turns from the client
-- Handle approvals and follow-up actions remotely
+- A local `codex` CLI installation
+- Flutter and the platform toolchain you plan to run
+- `dart` available on `PATH` if you use the source proxy launchers in `proxy/`
 
-## Non-Goals For The First Milestone
+## Choose A Connection Mode
 
-- No relay server
-- No cloud persistence of session history
-- No remote execution by default
-- No direct public exposure of local Codex internals
+### 1. Direct App-Server Connection
 
-## Current Architecture
+Use this when the app can talk to a Codex `app-server` directly.
 
-```text
-Android / iOS / Windows / macOS / Linux Flutter App
-        |
-    WebSocket JSON-RPC
-        |
-   codex app-server
-        |
-   Local Codex threads
-```
+1. Start the local app-server:
 
-The app talks directly to the local `app-server`. If you expose it remotely, do that through your own network boundary such as `frp`.
+   ```bash
+   codex app-server --listen ws://127.0.0.1:8766
+   ```
 
-## Share One App-Server With VS Code
+2. Run the Flutter app:
 
-The VS Code Codex extension normally launches its own private `stdio` app-server
-instance. To let Flutter observe the same live session without breaking VS
-behavior, use the local proxy in `proxy/`.
+   ```bash
+   cd app
+   flutter pub get
+   flutter run
+   ```
 
-Launchers by platform:
+3. In the app settings, set the Codex app-server URL:
 
-- Windows source launcher: `proxy/codex-proxy.cmd`
-- macOS / Linux source launcher: `proxy/codex-proxy`
-- Optional Windows local build output: `proxy/build/codex-proxy.exe`
-- Optional macOS / Linux local build output: `proxy/build/codex-proxy`
+| Target | URL |
+| --- | --- |
+| Desktop / iOS Simulator | `ws://127.0.0.1:8766` |
+| Android Emulator | `ws://10.0.2.2:8766` |
 
-Point VS Code setting `chatgpt.cliExecutable` to one of those paths. The proxy
-keeps VS Code on a normal private `stdio` child app-server, and mirrors that
-same session to `ws://127.0.0.1:8767` for secondary clients such as Flutter.
+### 2. Share The Same VS Code Session
 
-On macOS and Linux, make the source launcher executable before using it:
+Use this when the app should attach to the exact live session already used by
+the VS Code Codex extension.
 
-```bash
-chmod +x proxy/codex-proxy
-```
+1. Point the VS Code setting `chatgpt.cliExecutable` to one of these launchers:
 
-## MVP Scope
+   - Windows source launcher: `proxy/codex-proxy.cmd`
+   - Windows built launcher: `proxy/build/codex-proxy.exe`
+   - macOS / Linux source launcher: `proxy/codex-proxy`
 
-### Included
+2. Configure VS Code:
 
-- App-server URL configuration
-- Thread list screen
-- Thread detail screen
-- Basic operation timeline rendering
-- Realtime connection shell
-- Model selection and runtime state
-- Composer, interrupt, and approval response flows
-- Shared codebase for Android, iOS, Windows, macOS, and Linux
+   - open Settings and search for `chatgpt.cliExecutable`, or
+   - open `settings.json` and set it directly
 
-### Deferred
+   Example:
 
-- Push notifications
-- Rich offline cache
-- Multi-device account management
+   ```json
+   {
+     "chatgpt.cliExecutable": "<path-to-your-repo>\\proxy\\codex-proxy.cmd"
+   }
+   ```
 
-## Repository Layout
+3. Do not append `app-server` or `--listen` yourself in the setting. The proxy
+   only intercepts the normal `codex app-server` launch that VS Code starts on
+   its own.
 
-```text
-README.md          Project overview and setup notes
-app/               Flutter application
-proxy/             VS Code stdio tee proxy with websocket mirror
-```
+4. On macOS or Linux, make the source launcher executable:
 
-## App Stack
+   ```bash
+   chmod +x proxy/codex-proxy
+   ```
 
-- Flutter
-- Dart
-- Material 3 UI
-- `dart:io` WebSocket for app-server JSON-RPC
+5. If the real `codex` executable is not on `PATH`, set
+   `CODEX_PROXY_REAL_CLI` before starting VS Code so the proxy can find it.
 
-Additional packages can be added once the core flows are in place.
+6. Use Codex in VS Code as usual. The proxy mirrors that same session to:
 
-## App-Server Surface
+   ```text
+   ws://127.0.0.1:8767
+   ```
 
-The app talks directly to Codex `app-server` JSON-RPC methods such as:
+7. In the app settings, set the Codex app-server URL:
 
-- `initialize`
-- `config/read`
-- `model/list`
-- `thread/list`
-- `thread/loaded/list`
-- `thread/read`
-- `thread/start`
-- `thread/resume`
-- `turn/start`
-- `turn/steer`
-- `turn/interrupt`
+| Target | URL |
+| --- | --- |
+| Desktop / iOS Simulator | `ws://127.0.0.1:8767` |
+| Android Emulator | `ws://10.0.2.2:8767` |
 
-Realtime updates are consumed from the same WebSocket connection. The client normalizes notifications into its own event model and prefers server-side timestamps when available.
+## How To Use The App
 
-## Local Development
+### First Launch
 
-1. Install Flutter 3.41+.
-2. Ensure Android Studio, Xcode, Visual Studio Desktop C++, and the Linux desktop toolchain are available for the platforms you plan to run.
-3. Run `codex app-server --listen ws://127.0.0.1:8766` if it is not already running.
-4. Run the Flutter app from the `app/` directory.
+1. Start the local `app-server` or the VS Code shared-session proxy.
+2. Open the app and enter `Codex settings`.
+3. Fill in the Codex app-server URL, then choose `Save configuration`.
+4. Return to the main page and use `Refresh` if the thread list does not load
+   immediately.
 
-## Codex App-Server
+### Thread List Page
 
-Default local endpoint:
+The main page is the session list. From the top bar you can:
 
-- WebSocket: `ws://127.0.0.1:8766`
+- `Refresh`: reload the thread list and current connection state
+- `New Session`: create a new Codex session
+- `App-server Logs`: inspect live RPC requests, responses, errors, and events
+- `Codex settings`: change the endpoint, theme, language, and notification
+  preferences
 
-## App
+Tap a session to open its detail view. The list also supports archiving or
+restoring sessions.
 
-Run the client from the `app/` directory.
+### Create A New Session
 
-```bash
-cd app
-flutter pub get
-flutter run
-```
+1. Click `New Session`.
+2. Enter the first prompt for the session.
+3. Optionally select a model.
+4. Choose the session mode:
 
-Desktop examples:
+   - `No file changes`
+   - `Current project only`
+   - `Includes outside project`
 
-```bash
-flutter run -d windows
-flutter run -d macos
-flutter run -d linux
-```
+5. Choose a workspace:
 
-## Runtime Configuration
+   - provider default workspace
+   - one of the workspaces already used by existing sessions
+   - a path from the directory tree
 
-The current app stores runtime settings in-app, including:
+6. Click `Create`.
 
-- App-server URL
+### Work Inside A Session
 
-No build-time flavor setup is required for local development.
+The session detail page shows the conversation, operation timeline, live
+connection state, and pending runtime requests.
+
+At the bottom composer you can:
+
+- type the next prompt
+- switch model
+- switch permission mode for follow-up prompts
+- add an image or file attachment
+- paste supported clipboard content into the composer
+- send the prompt
+
+If a turn is currently running and the composer is empty, the send button turns
+into `Stop response` and interrupts the active turn.
+
+### Handle Requests And Debug Issues
+
+- Approval, user-input, and MCP requests appear in the pending requests area at
+  the bottom of a session.
+- Simple requests can be answered inline. Structured requests open a form dialog
+  and are submitted with `Submit`.
+- If a request includes a URL, the app can copy it to the clipboard.
+- `App-server Logs` provides a live RPC trace with search and filters for
+  calls, returns, errors, and events, which is the main page to inspect when a
+  session does not behave as expected.
+
+### Proxy Checklist For VS Code
+
+If the app does not attach to the same live session as VS Code, check these
+first:
+
+- `chatgpt.cliExecutable` points to `proxy/codex-proxy.cmd`,
+  `proxy/codex-proxy`, or your built proxy executable
+- you did not put `app-server` or `--listen` into that setting
+- the real `codex` CLI is on `PATH`, or `CODEX_PROXY_REAL_CLI` is set
+- the app is connected to `ws://127.0.0.1:8767` or the mirror URL you overrode
+- `App-server Logs` and proxy stderr output show the proxy actually started
+
+## What The App Can Do
+
+- Browse thread lists and thread details
+- Follow realtime updates and the operation timeline
+- Start threads and send follow-up prompts
+- Steer or interrupt active turns
+- Review approval, user-input, and MCP requests
+- Switch theme and language, and enable notifications for approvals, final
+  answers, and realtime errors
+
+## Proxy Options
+
+The proxy mirror defaults to `ws://127.0.0.1:8767`.
+
+Optional environment variables:
+
+- `CODEX_PROXY_MIRROR_WS`: override the mirror WebSocket endpoint
+- `CODEX_PROXY_REAL_CLI`: set an explicit path to the real `codex` executable
+- `CODEX_PROXY_DEBUG=1`: print proxy logs to `stderr`
+
+## More Module Docs
+
+- [`app/README.md`](app/README.md)
+- [`proxy/README.md`](proxy/README.md)
+
+## Notes
+
+- The app talks to Codex over WebSocket JSON-RPC.
+- This repo does not include a relay server or public exposure layer.
+- If you need remote access, put your own network boundary in front of the
+  local endpoint, such as `frp`.
