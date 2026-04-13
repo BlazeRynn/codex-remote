@@ -255,6 +255,8 @@ class _ThreadDetailPaneState extends State<ThreadDetailPane>
   bool _queuedProjectionForceScroll = false;
   String _queuedProjectionReason = 'unknown';
   bool _primeProjectionPending = false;
+  bool _followConversationFrameSyncScheduled = false;
+  bool? _pendingFollowConversationValue;
   int _scrollToBottomRequestId = 0;
   int _queuedComposerSubmissionOrdinal = 0;
   int _realtimeReconnectAttempt = 0;
@@ -870,8 +872,33 @@ class _ThreadDetailPaneState extends State<ThreadDetailPane>
       _followConversation = next;
       return;
     }
-    setState(() {
-      _followConversation = next;
+    final schedulerPhase = SchedulerBinding.instance.schedulerPhase;
+    final canUpdateImmediately =
+        schedulerPhase == SchedulerPhase.idle ||
+        schedulerPhase == SchedulerPhase.postFrameCallbacks;
+    if (canUpdateImmediately) {
+      setState(() {
+        _followConversation = next;
+      });
+      return;
+    }
+    _pendingFollowConversationValue = next;
+    if (_followConversationFrameSyncScheduled) {
+      return;
+    }
+    _followConversationFrameSyncScheduled = true;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _followConversationFrameSyncScheduled = false;
+      final pendingValue = _pendingFollowConversationValue;
+      _pendingFollowConversationValue = null;
+      if (!mounted ||
+          pendingValue == null ||
+          _followConversation == pendingValue) {
+        return;
+      }
+      setState(() {
+        _followConversation = pendingValue;
+      });
     });
   }
 
@@ -2330,6 +2357,7 @@ class _ThreadDetailPaneState extends State<ThreadDetailPane>
                           onRespond: _respondToPendingRequest,
                           onOpenStructuredRequest: _openStructuredRequest,
                           onCopyUrl: _copyRequestUrl,
+                          compact: compactLayout,
                           workspaceStyle: widget.workspaceStyle,
                           expanded: _pendingRequestsExpanded,
                           onToggleExpanded: () {
@@ -2826,6 +2854,7 @@ class _PendingRequestsPanel extends StatelessWidget {
     required this.onCopyUrl,
     required this.expanded,
     required this.onToggleExpanded,
+    this.compact = false,
     this.workspaceStyle = false,
   });
 
@@ -2837,6 +2866,7 @@ class _PendingRequestsPanel extends StatelessWidget {
   final Future<void> Function(String url) onCopyUrl;
   final bool expanded;
   final VoidCallback onToggleExpanded;
+  final bool compact;
   final bool workspaceStyle;
 
   @override
@@ -2848,6 +2878,13 @@ class _PendingRequestsPanel extends StatelessWidget {
       '${requests.length} pending request${requests.length == 1 ? '' : 's'}',
     );
     final firstTitle = requests.first.title.trim();
+    final mergedMobileApprovalCards = compact && !workspaceStyle;
+    final approvalRequests = requests
+        .where((request) => request.kind.contains('approval'))
+        .toList(growable: false);
+    final nonApprovalRequests = requests
+        .where((request) => !request.kind.contains('approval'))
+        .toList(growable: false);
     return _SurfaceSection(
       workspaceStyle: workspaceStyle,
       child: Column(
@@ -2914,7 +2951,18 @@ class _PendingRequestsPanel extends StatelessWidget {
           ),
           if (!workspaceStyle || expanded) ...[
             SizedBox(height: workspaceStyle ? 10 : 16),
-            ...requests.map(
+            if (mergedMobileApprovalCards && approvalRequests.isNotEmpty)
+              Padding(
+                padding: EdgeInsets.only(bottom: workspaceStyle ? 8 : 12),
+                child: _MergedMobileApprovalCard(
+                  requests: approvalRequests,
+                  busy: busy,
+                  onRespond: onRespond,
+                  onOpenStructuredRequest: onOpenStructuredRequest,
+                  onCopyUrl: onCopyUrl,
+                ),
+              ),
+            ...(mergedMobileApprovalCards ? nonApprovalRequests : requests).map(
               (request) => Padding(
                 padding: EdgeInsets.only(bottom: workspaceStyle ? 8 : 12),
                 child: _PendingRequestCard(
@@ -2923,7 +2971,7 @@ class _PendingRequestsPanel extends StatelessWidget {
                   onRespond: onRespond,
                   onOpenStructuredRequest: onOpenStructuredRequest,
                   onCopyUrl: onCopyUrl,
-                  compact: workspaceStyle,
+                  compact: workspaceStyle || compact,
                 ),
               ),
             ),
@@ -2975,6 +3023,20 @@ class _PendingRequestCardState extends State<_PendingRequestCard> {
         ?.copyWith(fontWeight: FontWeight.w600);
   }
 
+  CodexPendingAction? _quickApproveAction(CodexPendingRequest request) {
+    for (final action in request.actions) {
+      if (!action.destructive && action.id == 'approve') {
+        return action;
+      }
+    }
+    for (final action in request.actions) {
+      if (!action.destructive && action.recommended) {
+        return action;
+      }
+    }
+    return null;
+  }
+
   @override
   Widget build(BuildContext context) {
     final request = widget.request;
@@ -3003,6 +3065,9 @@ class _PendingRequestCardState extends State<_PendingRequestCard> {
       request.cwd?.trim() ?? '',
     ].where((part) => part.isNotEmpty).toList(growable: false);
     final canExpandApproval = isApprovalCard && approvalDetailLines.isNotEmpty;
+    final quickApproveAction = isApprovalCard
+        ? _quickApproveAction(request)
+        : null;
     final structuredAction = isApprovalCard
         ? const <CodexPendingAction>[]
         : request.actions
@@ -3104,6 +3169,15 @@ class _PendingRequestCardState extends State<_PendingRequestCard> {
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             if (isApprovalCard) ...[
+              Text(
+                _humanize(context, request.kind),
+                style: theme.textTheme.labelSmall?.copyWith(
+                  color: secondaryTextColor(theme),
+                  fontWeight: FontWeight.w700,
+                  letterSpacing: 0.3,
+                ),
+              ),
+              const SizedBox(height: 6),
               Row(
                 children: [
                   Expanded(
@@ -3153,8 +3227,6 @@ class _PendingRequestCardState extends State<_PendingRequestCard> {
                       ),
                     ),
                   ],
-                  const SizedBox(width: 8),
-                  _StatusPill(label: request.kind, compact: compact),
                 ],
               ),
               if (_approvalExpanded) ...[
@@ -3172,6 +3244,30 @@ class _PendingRequestCardState extends State<_PendingRequestCard> {
                 ),
               ],
               const SizedBox(height: 8),
+              if (quickApproveAction != null) ...[
+                SizedBox(
+                  width: double.infinity,
+                  child: FilledButton.icon(
+                    onPressed: busy
+                        ? null
+                        : () {
+                            unawaited(
+                              onRespond(request, quickApproveAction.id),
+                            );
+                          },
+                    icon: const Icon(Icons.check_circle_outline_rounded),
+                    style: FilledButton.styleFrom(
+                      minimumSize: Size(0, compact ? 38 : 42),
+                    ),
+                    label: Text(
+                      quickApproveAction.label.trim().isEmpty
+                          ? strings.text('Approve', 'Approve')
+                          : quickApproveAction.label,
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 8),
+              ],
               SingleChildScrollView(
                 scrollDirection: Axis.horizontal,
                 child: Row(
@@ -3248,6 +3344,222 @@ class _PendingRequestCardState extends State<_PendingRequestCard> {
               ],
               const SizedBox(height: 14),
               Wrap(spacing: 8, runSpacing: 8, children: actionButtons),
+            ],
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _MergedMobileApprovalCard extends StatelessWidget {
+  const _MergedMobileApprovalCard({
+    required this.requests,
+    required this.busy,
+    required this.onRespond,
+    required this.onOpenStructuredRequest,
+    required this.onCopyUrl,
+  });
+
+  final List<CodexPendingRequest> requests;
+  final bool busy;
+  final PendingRequestResponder onRespond;
+  final Future<void> Function(CodexPendingRequest request)
+  onOpenStructuredRequest;
+  final Future<void> Function(String url) onCopyUrl;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final strings = context.strings;
+    final summary = strings.text(
+      requests.length == 1
+          ? '1 approval waiting'
+          : '${requests.length} approvals waiting',
+      requests.length == 1 ? '1 个审批待处理' : '${requests.length} 个审批待处理',
+    );
+    return DecoratedBox(
+      decoration: BoxDecoration(
+        color: mutedPanelBackgroundColor(theme),
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: borderColor(theme)),
+      ),
+      child: Padding(
+        padding: const EdgeInsets.all(12),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        strings.text('Approvals', '审批'),
+                        style: theme.textTheme.titleSmall?.copyWith(
+                          fontWeight: FontWeight.w700,
+                        ),
+                      ),
+                      const SizedBox(height: 4),
+                      Text(
+                        summary,
+                        style: theme.textTheme.bodySmall?.copyWith(
+                          color: secondaryTextColor(theme),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                _StatusPill(label: 'approval', compact: true),
+              ],
+            ),
+            const SizedBox(height: 10),
+            ...requests.asMap().entries.map(
+              (entry) => Padding(
+                padding: EdgeInsets.only(
+                  bottom: entry.key == requests.length - 1 ? 0 : 8,
+                ),
+                child: _MergedMobileApprovalItem(
+                  request: entry.value,
+                  busy: busy,
+                  onRespond: onRespond,
+                  onOpenStructuredRequest: onOpenStructuredRequest,
+                  onCopyUrl: onCopyUrl,
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _MergedMobileApprovalItem extends StatelessWidget {
+  const _MergedMobileApprovalItem({
+    required this.request,
+    required this.busy,
+    required this.onRespond,
+    required this.onOpenStructuredRequest,
+    required this.onCopyUrl,
+  });
+
+  final CodexPendingRequest request;
+  final bool busy;
+  final PendingRequestResponder onRespond;
+  final Future<void> Function(CodexPendingRequest request)
+  onOpenStructuredRequest;
+  final Future<void> Function(String url) onCopyUrl;
+
+  CodexPendingAction? _quickApproveAction() {
+    for (final action in request.actions) {
+      if (!action.destructive && action.id == 'approve') {
+        return action;
+      }
+    }
+    for (final action in request.actions) {
+      if (!action.destructive && action.recommended) {
+        return action;
+      }
+    }
+    return null;
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final strings = context.strings;
+    final quickApproveAction = _quickApproveAction();
+    final lines = <String>[
+      request.title.trim(),
+      request.message.trim(),
+      request.detail?.trim() ?? '',
+      request.command?.trim() ?? '',
+      request.cwd?.trim() ?? '',
+    ].where((value) => value.isNotEmpty).toList(growable: false);
+    final preview = lines.isEmpty ? request.kind : lines.join(' 路 ');
+
+    return DecoratedBox(
+      decoration: BoxDecoration(
+        color: panelBackgroundColor(theme),
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: borderColor(theme)),
+      ),
+      child: Padding(
+        padding: const EdgeInsets.all(10),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              _humanize(context, request.kind),
+              style: theme.textTheme.labelSmall?.copyWith(
+                color: secondaryTextColor(theme),
+                fontWeight: FontWeight.w700,
+                letterSpacing: 0.3,
+              ),
+            ),
+            const SizedBox(height: 6),
+            Text(
+              preview,
+              maxLines: 3,
+              overflow: TextOverflow.ellipsis,
+              style: theme.textTheme.bodySmall?.copyWith(
+                fontWeight: FontWeight.w600,
+                height: 1.25,
+              ),
+            ),
+            const SizedBox(height: 8),
+            Row(
+              children: [
+                Expanded(
+                  child: FilledButton.icon(
+                    onPressed: busy || quickApproveAction == null
+                        ? null
+                        : () {
+                            unawaited(
+                              onRespond(request, quickApproveAction.id),
+                            );
+                          },
+                    icon: const Icon(Icons.check_circle_outline_rounded),
+                    style: FilledButton.styleFrom(
+                      minimumSize: const Size(0, 38),
+                    ),
+                    label: Text(
+                      quickApproveAction?.label.trim().isNotEmpty == true
+                          ? quickApproveAction!.label
+                          : strings.text('Approve', 'Approve'),
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 8),
+                OutlinedButton(
+                  onPressed: busy
+                      ? null
+                      : () {
+                          unawaited(onOpenStructuredRequest(request));
+                        },
+                  style: OutlinedButton.styleFrom(
+                    minimumSize: const Size(68, 38),
+                  ),
+                  child: Text(strings.text('Details', '详情')),
+                ),
+              ],
+            ),
+            if ((request.url ?? '').trim().isNotEmpty) ...[
+              const SizedBox(height: 8),
+              Align(
+                alignment: Alignment.centerLeft,
+                child: TextButton.icon(
+                  onPressed: busy
+                      ? null
+                      : () {
+                          unawaited(onCopyUrl(request.url!));
+                        },
+                  icon: const Icon(Icons.copy_all_outlined, size: 16),
+                  label: Text(strings.text('Copy URL', '复制 URL')),
+                ),
+              ),
             ],
           ],
         ),
