@@ -202,6 +202,7 @@ class _ThreadDetailPaneState extends State<ThreadDetailPane>
     with AutomaticKeepAliveClientMixin<ThreadDetailPane> {
   static final Map<String, CodexThreadBundle> _bundleCache = {};
   static final Map<String, CodexThreadRuntime> _runtimeCache = {};
+  static final Map<String, _QueuedComposerCacheEntry> _queuedComposerCache = {};
   static const int _maxCachedPrimeItems = 120;
 
   late final CodexRepository _repository;
@@ -441,6 +442,16 @@ class _ThreadDetailPaneState extends State<ThreadDetailPane>
       _runtimeLoading = false;
       shouldRefreshView = true;
     }
+    final cachedQueuedComposer = _queuedComposerCache[widget.thread.id];
+    if (cachedQueuedComposer != null) {
+      _queuedComposerSubmissions = cachedQueuedComposer.submissions;
+      _queuedComposerSubmissionOrdinal = cachedQueuedComposer.nextOrdinal;
+      _queuedComposerAwaitingTurnCompletion = shouldAwaitQueuedTurnCompletion(
+        hasQueuedSubmissions: cachedQueuedComposer.submissions.isNotEmpty,
+        hasActiveTurnInFlight: _hasActiveTurnInFlight,
+      );
+      shouldRefreshView = true;
+    }
     if (mounted && shouldRefreshView) {
       setState(() {});
     }
@@ -507,6 +518,18 @@ class _ThreadDetailPaneState extends State<ThreadDetailPane>
     _pruneThreadCaches();
   }
 
+  void _storeQueuedComposerCache() {
+    if (_queuedComposerSubmissions.isEmpty) {
+      _queuedComposerCache.remove(widget.thread.id);
+      return;
+    }
+    _queuedComposerCache[widget.thread.id] = _QueuedComposerCacheEntry(
+      submissions: List.unmodifiable(_queuedComposerSubmissions),
+      nextOrdinal: _queuedComposerSubmissionOrdinal,
+    );
+    _pruneThreadCaches();
+  }
+
   void _storeCurrentThreadState({List<CodexThreadItem>? items}) {
     _storeBundleCache(
       CodexThreadBundle(
@@ -515,6 +538,7 @@ class _ThreadDetailPaneState extends State<ThreadDetailPane>
       ),
     );
     _storeRuntimeCache(_runtime);
+    _storeQueuedComposerCache();
   }
 
   void _pruneThreadCaches() {
@@ -523,6 +547,9 @@ class _ThreadDetailPaneState extends State<ThreadDetailPane>
     }
     while (_runtimeCache.length > 24) {
       _runtimeCache.remove(_runtimeCache.keys.first);
+    }
+    while (_queuedComposerCache.length > 24) {
+      _queuedComposerCache.remove(_queuedComposerCache.keys.first);
     }
   }
 
@@ -1639,6 +1666,7 @@ class _ThreadDetailPaneState extends State<ThreadDetailPane>
       _followConversation = true;
       _controlError = null;
     });
+    _storeQueuedComposerCache();
     _scrollConversationToBottom(animated: false, force: true);
   }
 
@@ -1652,6 +1680,7 @@ class _ThreadDetailPaneState extends State<ThreadDetailPane>
         hasActiveTurnInFlight: _hasActiveTurnInFlight,
       );
     });
+    _storeQueuedComposerCache();
   }
 
   Future<void> _removeQueuedComposerSubmission(
@@ -1693,6 +1722,7 @@ class _ThreadDetailPaneState extends State<ThreadDetailPane>
       );
       _controlError = null;
     });
+    _storeQueuedComposerCache();
   }
 
   Future<void> _steerQueuedComposerSubmission(
@@ -1791,6 +1821,7 @@ class _ThreadDetailPaneState extends State<ThreadDetailPane>
             _queuedComposerSubmissions.skip(1),
           );
         });
+        _storeQueuedComposerCache();
 
         final sent = await _dispatchComposerSubmission(nextSubmission);
         if (!mounted) {
@@ -1803,6 +1834,7 @@ class _ThreadDetailPaneState extends State<ThreadDetailPane>
               ..._queuedComposerSubmissions,
             ]);
           });
+          _storeQueuedComposerCache();
           return;
         }
       }
@@ -2089,6 +2121,7 @@ class _ThreadDetailPaneState extends State<ThreadDetailPane>
     Map<String, dynamic>? answers,
     Object? content,
   }) async {
+    final previousHadActiveTurnInFlight = _hasActiveTurnInFlight;
     final pendingBeforeResponse = _runtime.pendingRequests;
     final requestWasPending = pendingBeforeResponse.any(
       (pending) => pending.id == request.id,
@@ -2133,7 +2166,7 @@ class _ThreadDetailPaneState extends State<ThreadDetailPane>
       _storeCurrentThreadState();
       unawaited(_loadBundle(showSpinner: false, forceScrollToBottom: true));
       _maybeDispatchQueuedComposerSubmissions(
-        previousHadActiveTurnInFlight: _hasActiveTurnInFlight,
+        previousHadActiveTurnInFlight: previousHadActiveTurnInFlight,
       );
     } catch (error) {
       if (!mounted) {
@@ -3977,6 +4010,16 @@ class _QueuedComposerSubmission {
       .where((value) => value.isNotEmpty)
       .join('\n');
   int get attachmentCount => input.where((part) => part.isAttachment).length;
+}
+
+class _QueuedComposerCacheEntry {
+  const _QueuedComposerCacheEntry({
+    required this.submissions,
+    required this.nextOrdinal,
+  });
+
+  final List<_QueuedComposerSubmission> submissions;
+  final int nextOrdinal;
 }
 
 class _PendingRequestSubmission {
